@@ -19,26 +19,37 @@ Las claves normales `sk-*` solo permiten ver validez y conteo de modelos (OpenAI
 - Numero de modelos disponibles
 - Lista de modelos gratuitos
 
-**Nota importante:** OpenCode **no expone el saldo/créditos via API key**. Esa informacion solo esta en el dashboard web tras login en https://opencode.ai/auth. El script valida la clave y lista modelos; el saldo real debe revisarse ahi.
+**Nota:** OpenCode **no expone el saldo/créditos via API key**. Esa informacion solo está en el dashboard web tras login.
+
+### OpenCode — saldo real (scraping via cookie de sesión)
+- Saldo actual (USD)
+- Uso del mes y límite mensual (con % de uso)
+- Plan (Black / Go / Pay-as-you-go)
+- Auto-reload (monto y trigger)
+- Workspace ID
+
+Funciona pegando la cookie `auth` de opencode.ai (ver instrucciones en el propio dashboard). El server scrapea `/workspace/<id>/billing` cada 5 min (~configurable). La cookie dura ~1 año, así que no requiere re-login.
 
 ## Configuracion
 
-Edita `config.json` con tus cuentas:
+Edita `config.json` con tus cuentas API:
 
 ```json
 {
   "port": 8765,
   "host": "0.0.0.0",
   "refresh_seconds": 300,
+  "scrape_refresh_seconds": 300,
   "openai_accounts": [
     { "name": "openai-admin-1", "key": "sk-admin-..." }
   ],
   "opencode_accounts": [
-    { "name": "opencode-zen-1", "key": "oc_zen_..." },
-    { "name": "opencode-go-1",  "key": "oc_go_..."  }
+    { "name": "opencode-zen-1", "key": "oc_zen_..." }
   ]
 }
 ```
+
+Las cuentas de **scraping (cookie)** se añaden desde el formulario del dashboard (no en config.json); se guardan en `sessions/` (gitignored).
 
 ## Uso con Docker
 
@@ -69,7 +80,11 @@ Abre http://localhost:8765 (requiere Python 3.10+, sin dependencias externas).
 | `GET /` | Dashboard HTML |
 | `GET /api/data` | Estado actual en JSON |
 | `GET /api/config` | Config sin claves |
-| `POST /api/refresh` | Forzar refresco |
+| `GET /api/sessions` | Sesiones scrapeadas (sin cookies) |
+| `POST /api/refresh` | Forzar refresco de todo |
+| `POST /api/session` | Añadir cuenta de scraping (body `{name,cookie}`) |
+| `POST /api/session/scrape` | Forzar re-scrape |
+| `DELETE /api/session?name=...` | Eliminar cuenta de scraping |
 
 ## Seguridad
 

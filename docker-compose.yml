@@ -6,7 +6,9 @@ services:
     ports:
       - "8765:8765"
     volumes:
-      # Monta tu config.json real (con tus claves) sobre el template.
+      # Monta tu config.json real (con tus claves API) sobre el template.
       # Si no existe, se usa config.example.json del interior de la imagen.
       - ./config.json:/app/config.json:ro
+      # Persiste las sesiones (cookies) entre reinicios del contenedor.
+      - ./sessions:/app/sessions
     restart: unless-stopped

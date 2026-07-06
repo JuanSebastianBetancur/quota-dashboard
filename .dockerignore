@@ -6,3 +6,5 @@ server.log
 daemon.debug.log
 .git/
 .gitignore
+config.json
+sessions/

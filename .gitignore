@@ -6,3 +6,5 @@ server.log
 daemon.debug.log
 .env
 config.json
+sessions/
+config.json
