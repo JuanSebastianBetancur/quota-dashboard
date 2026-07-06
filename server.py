@@ -332,7 +332,11 @@ def scrape_opencode(cookie, workspace_id=None):
         "subscription_plan": None,
         "lite_subscription_id": None,
         "plan_label": None,
-        "http_status": None,
+        "http_status_billing": None,
+        "http_status_go": None,
+        "go_rolling": None,
+        "go_weekly": None,
+        "go_monthly": None,
         "error": None,
         "raw_snippet": None,
     }
@@ -369,7 +373,7 @@ def scrape_opencode(cookie, workspace_id=None):
     st, _, body = _http_get_full(
         f"{OPENCODE_WEB}/workspace/{workspace_id}/billing", headers, timeout=25
     )
-    out["http_status"] = st
+    out["http_status_billing"] = st
     if st != 200:
         out["status"] = "error"
         out["error"] = f"billing HTTP {st}."
@@ -407,6 +411,16 @@ def scrape_opencode(cookie, workspace_id=None):
     else:
         out["plan_label"] = "Pay-as-you-go"
 
+    # Scrapeo de /workspace/<id>/go para los medidores de uso (5h/semana/mes)
+    stg, _, gbody = _http_get_full(
+        f"{OPENCODE_WEB}/workspace/{workspace_id}/go", headers, timeout=25
+    )
+    out["http_status_go"] = stg
+    if stg == 200:
+        out["go_rolling"] = _extract_usage_meter(gbody, "rollingUsage")
+        out["go_weekly"] = _extract_usage_meter(gbody, "weeklyUsage")
+        out["go_monthly"] = _extract_usage_meter(gbody, "monthlyUsage")
+
     if balance is None and monthly_limit is None and monthly_usage is None:
         low = body.lower()
         if "sign in" in low or "/auth" in low or "log in" in low:
@@ -420,6 +434,21 @@ def scrape_opencode(cookie, workspace_id=None):
 
     out["status"] = "ok"
     return out
+
+
+def _extract_usage_meter(body, key):
+    """Extrae {status, resetInSec, usagePercent} de un chunk tipo rollingUsage:$R[..]={...}"""
+    m = re.search(
+        re.escape(key) + r"\s*:\s*\$R\[\d+\]=\{([^}]*)\}",
+        body,
+    )
+    if not m:
+        return None
+    inner = m.group(1)
+    status = _extract_str(inner, "status") or _extract_raw(inner, "status")
+    pct = _extract_int(inner, "usagePercent")
+    reset = _extract_int(inner, "resetInSec")
+    return {"status": status, "usagePercent": pct, "resetInSec": reset}
 
 
 # ---------- gestion de sesiones (cookies) ----------
@@ -627,18 +656,10 @@ HTML_PAGE = """<!doctype html>
   <h1>Cuotas: OpenAI + OpenCode</h1>
   <span class="meta" id="updated"></span>
   <span id="loading" class="show">cargando...</span>
-  <button onclick="refresh()">Refrescar</button>
+  <button onclick="refreshScrape()">Actualizar saldo</button>
+  <button onclick="refresh()">Actualizar todo</button>
 </header>
 <main>
-  <section>
-    <h2>OpenAI (claves admin)</h2>
-    <div class="grid" id="openai"><div class="empty">cargando...</div></div>
-  </section>
-  <section>
-    <h2>OpenCode Zen / Go (via API key)</h2>
-    <p class="note">OpenCode no expone el saldo via API key; solo validacion + lista de modelos. El saldo real se ve en <a style="color:var(--accent)" href="https://opencode.ai/auth" target="_blank">opencode.ai/auth</a> tras login.</p>
-    <div class="grid" id="opencode"><div class="empty">cargando...</div></div>
-  </section>
   <section>
     <h2>OpenCode — saldo real (scraping via cookie)</h2>
     <div class="add-form">
@@ -660,6 +681,15 @@ HTML_PAGE = """<!doctype html>
       </details>
     </div>
     <div class="grid" id="scraped"><div class="empty">sin cuentas scrapeadas — anade una con el formulario de arriba</div></div>
+  </section>
+  <section>
+    <h2>OpenAI (claves admin)</h2>
+    <div class="grid" id="openai"><div class="empty">cargando...</div></div>
+  </section>
+  <section>
+    <h2>OpenCode Zen / Go (via API key)</h2>
+    <p class="note">OpenCode no expone el saldo via API key; solo validacion + lista de modelos.</p>
+    <div class="grid" id="opencode"><div class="empty">cargando...</div></div>
   </section>
   <section id="errors"></section>
 </main>
@@ -712,19 +742,43 @@ function renderOpenCode(d){
   let note = '<div class="note">'+esc(d.balance_note)+'</div>';
   return '<div class="card"><div class="name">'+esc(d.name)+' '+badge(d.status)+'</div>'+rows+tierDetails+err+note+'</div>';
 }
+function fmtSec(s){
+  if(s==null) return '—';
+  if(s<3600) return Math.round(s/60)+' min';
+  if(s<86400) return (s/3600).toFixed(1)+' h';
+  return (s/86400).toFixed(1)+' d';
+}
+function pctBadge(pct){
+  if(pct==null) return '—';
+  let cls = pct>=90?'err':pct>=70?'warn':'ok';
+  return '<span class="badge '+cls+'">'+pct+'%</span>';
+}
+function meterRow(label, m){
+  if(!m) return row(label, '—');
+  let status = m.status==='ok' ? '<span class="badge ok">OK</span>' : '<span class="badge warn">'+esc(m.status||'?')+'</span>';
+  return row(label, pctBadge(m.usagePercent)+' reset en '+fmtSec(m.resetInSec));
+}
 function renderScraped(d){
   let rows = '';
   if(d.email) rows += row('Email', esc(d.email));
   rows += row('Plan', esc(d.plan_label||'—'));
   rows += row('Saldo', '<span class="big">'+money(d.balance_usd)+'</span>');
-  rows += row('Uso del mes', money(d.monthly_usage_usd));
+  rows += row('Uso del mes (billing)', money(d.monthly_usage_usd));
   let lim = d.monthly_limit_usd;
   let limPct = (d.monthly_usage_usd!=null && lim>0) ? Math.round(d.monthly_usage_usd/lim*100) : null;
-  rows += row('Limite mensual', money(lim) + (limPct!=null? ' <span class="badge '+(limPct>=90?'err':limPct>=70?'warn':'ok')+'">'+limPct+'%</span>':''));
+  rows += row('Limite mensual', money(lim) + (limPct!=null? ' '+pctBadge(limPct):''));
   rows += row('Auto-reload', d.reload_enabled==='true' ? 'ON ('+money(d.reload_amount_usd)+' cuando < '+money(d.reload_trigger_usd)+')' : (d.reload_enabled==='false'?'OFF':'—'));
   if(d.lite_subscription_id) rows += row('Go subscription', esc(d.lite_subscription_id));
+  // Medidores de uso Go (5h / semana / mes)
+  if(d.go_rolling || d.go_weekly || d.go_monthly){
+    rows += '<div style="margin:8px 0 2px;font-weight:600;color:var(--accent);font-size:12px">Uso Go (limites)</div>';
+    rows += meterRow('Rolling 5h', d.go_rolling);
+    rows += meterRow('Semanal', d.go_weekly);
+    rows += meterRow('Mensual', d.go_monthly);
+  }
   rows += row('Workspace', esc(d.workspace_id||'—'));
-  if(d.http_status) rows += row('HTTP billing', d.http_status);
+  if(d.http_status_billing) rows += row('HTTP billing', d.http_status_billing);
+  if(d.http_status_go) rows += row('HTTP go', d.http_status_go);
   let err = d.error ? '<div class="err">'+esc(d.error)+'</div>' : '';
   let raw = '';
   if(d.raw_snippet){ raw = '<details><summary>HTML bruto (debug)</summary><div class="raw">'+esc(d.raw_snippet)+'</div></details>'; }
@@ -758,6 +812,10 @@ function poll(){
 function refresh(){
   document.getElementById('loading').classList.add('show');
   fetch('/api/refresh',{method:'POST'}).then(()=>poll());
+}
+function refreshScrape(){
+  document.getElementById('loading').classList.add('show');
+  fetch('/api/session/scrape',{method:'POST'}).then(()=>setTimeout(poll,3000));
 }
 function addSession(){
   let name = document.getElementById('s-name').value.trim();
