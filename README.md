@@ -1,6 +1,6 @@
 # quota-dashboard
 
-Dashboard web unificado para consultar cuotas, uso y limites de multiples cuentas de **OpenAI** y **OpenCode Zen / Go** desde el navegador.
+Dashboard web para consultar cuotas, uso y limites de multiples cuentas de **OpenAI** y **OpenCode** desde el navegador.
 
 ## Que muestra
 
@@ -12,27 +12,20 @@ Dashboard web unificado para consultar cuotas, uso y limites de multiples cuenta
 
 Las claves normales `sk-*` solo permiten ver validez y conteo de modelos (OpenAI no expone costos sin permisos de organizacion).
 
-### OpenCode Zen / Go (claves de opencode.ai/auth)
-- Validez de la clave
-- Tier detectado (zen / go)
-- Endpoint usado
-- Numero de modelos disponibles
-- Lista de modelos gratuitos
-
-**Nota:** OpenCode **no expone el saldo/créditos via API key**. Esa informacion solo está en el dashboard web tras login.
-
-### OpenCode — saldo real (scraping via cookie de sesión)
-- Saldo actual (USD)
-- Uso del mes y límite mensual (con % de uso)
+### OpenCode — saldo real (scraping via cookie de sesion)
+- Email de la cuenta
 - Plan (Black / Go / Pay-as-you-go)
+- Saldo actual (USD)
+- Uso del mes y limite mensual (con % de uso)
+- Medidores de uso Go: rolling 5h, semanal, mensual (% y tiempo de reset)
 - Auto-reload (monto y trigger)
 - Workspace ID
 
-Funciona pegando la cookie `auth` de opencode.ai (ver instrucciones en el propio dashboard). El server scrapea `/workspace/<id>/billing` cada 5 min (~configurable). La cookie dura ~1 año, así que no requiere re-login.
+Funciona pegando la cookie `auth` de opencode.ai (ver instrucciones en el propio dashboard). El server scrapea `/workspace/<id>/billing` y `/workspace/<id>/go` cada 5 min (~configurable). La cookie dura ~1 año, así que no requiere re-login.
 
 ## Configuracion
 
-Edita `config.json` con tus cuentas API:
+Edita `config.json` con tus cuentas OpenAI (opcional):
 
 ```json
 {
@@ -42,14 +35,11 @@ Edita `config.json` con tus cuentas API:
   "scrape_refresh_seconds": 300,
   "openai_accounts": [
     { "name": "openai-admin-1", "key": "sk-admin-..." }
-  ],
-  "opencode_accounts": [
-    { "name": "opencode-zen-1", "key": "oc_zen_..." }
   ]
 }
 ```
 
-Las cuentas de **scraping (cookie)** se añaden desde el formulario del dashboard (no en config.json); se guardan en `sessions/` (gitignored).
+Las cuentas de **OpenCode (scraping via cookie)** se añaden desde el formulario del dashboard (no en config.json); se guardan en `sessions/` (gitignored).
 
 ## Uso con Docker
 
