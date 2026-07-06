@@ -525,6 +525,40 @@ def refresh_scraped():
         _state["opencode_scraped"] = results
 
 
+def refresh_one_session(name):
+    """Re-scrapea una sola sesion por nombre y actualiza su entrada en el estado."""
+    sessions = list_sessions()
+    target = next((s for s in sessions if s.get("name") == name), None)
+    if not target:
+        return False
+    try:
+        cookie = target.get("cookie", "")
+        wsid = target.get("workspace_id")
+        scrape = scrape_opencode(cookie, wsid)
+        save_session(target["name"], cookie, scrape.get("workspace_id"), scrape)
+        scrape["name"] = target["name"]
+    except Exception as e:
+        scrape = {
+            "name": name,
+            "status": "error",
+            "error": f"{type(e).__name__}: {e}",
+        }
+    with _state_lock:
+        current = list(_state.get("opencode_scraped", []))
+        # reemplazar la entrada existente o añadir
+        found = False
+        for i, s in enumerate(current):
+            if s.get("name") == name:
+                current[i] = scrape
+                found = True
+                break
+        if not found:
+            current.append(scrape)
+        current.sort(key=lambda x: x.get("name", ""))
+        _state["opencode_scraped"] = current
+    return True
+
+
 # ---------- refresco ----------
 
 def refresh_all(config):
@@ -648,6 +682,9 @@ HTML_PAGE = """<!doctype html>
   .add-form details { margin-top:8px; }
   .card .del { margin-top:8px; background:transparent; color:var(--err); border:1px solid var(--border); padding:4px 10px; border-radius:6px; cursor:pointer; font-size:12px; }
   .card .del:hover { background:rgba(248,81,73,.1); }
+  .card .upd { margin-top:8px; background:transparent; color:var(--accent); border:1px solid var(--border); padding:4px 10px; border-radius:6px; cursor:pointer; font-size:12px; }
+  .card .upd:hover { background:rgba(88,166,255,.1); }
+  .card .upd:disabled, .card .del:disabled { opacity:.5; cursor:default; }
   .raw { white-space:pre-wrap; word-break:break-all; max-height:200px; overflow:auto; background:#0d1117; padding:8px; border-radius:6px; font:11px/1.4 ui-monospace,monospace; color:var(--muted); }
 </style>
 </head>
@@ -656,8 +693,6 @@ HTML_PAGE = """<!doctype html>
   <h1>Cuotas: OpenAI + OpenCode</h1>
   <span class="meta" id="updated"></span>
   <span id="loading" class="show">cargando...</span>
-  <button onclick="refreshScrape()">Actualizar saldo</button>
-  <button onclick="refresh()">Actualizar todo</button>
 </header>
 <main>
   <section>
@@ -782,8 +817,11 @@ function renderScraped(d){
   let err = d.error ? '<div class="err">'+esc(d.error)+'</div>' : '';
   let raw = '';
   if(d.raw_snippet){ raw = '<details><summary>HTML bruto (debug)</summary><div class="raw">'+esc(d.raw_snippet)+'</div></details>'; }
-  let del = '<button class="del" data-name="'+esc(d.name)+'">Eliminar</button>';
-  return '<div class="card"><div class="name">'+esc(d.name)+' '+badge(d.status)+'</div>'+rows+err+raw+del+'</div>';
+  let actions = '<div style="margin-top:10px;display:flex;gap:8px">'
+    + '<button class="upd" data-name="'+esc(d.name)+'">Actualizar</button>'
+    + '<button class="del" data-name="'+esc(d.name)+'">Eliminar</button>'
+    + '</div>';
+  return '<div class="card"><div class="name">'+esc(d.name)+' '+badge(d.status)+'</div>'+rows+err+raw+actions+'</div>';
 }
 function row(k,v){ return '<div class="row"><span class="k">'+esc(k)+'</span><span class="v">'+v+'</span></div>'; }
 function render(data){
@@ -809,14 +847,6 @@ function poll(){
     else { document.getElementById('loading').classList.add('show'); setTimeout(poll,1500); }
   }).catch(()=>setTimeout(poll,2000));
 }
-function refresh(){
-  document.getElementById('loading').classList.add('show');
-  fetch('/api/refresh',{method:'POST'}).then(()=>poll());
-}
-function refreshScrape(){
-  document.getElementById('loading').classList.add('show');
-  fetch('/api/session/scrape',{method:'POST'}).then(()=>setTimeout(poll,3000));
-}
 function addSession(){
   let name = document.getElementById('s-name').value.trim();
   let cookie = document.getElementById('s-cookie').value.trim();
@@ -835,9 +865,21 @@ function delSession(name){
   fetch('/api/session?name='+encodeURIComponent(name),{method:'DELETE'})
     .then(r=>r.json()).then(d=>{ if(d.ok) poll(); }).catch(()=>{});
 }
+function updateSession(name, btn){
+  if(btn){ btn.disabled = true; btn.textContent = 'Actualizando...'; }
+  fetch('/api/session/scrape?name='+encodeURIComponent(name),{method:'POST'})
+    .then(r=>r.json()).then(d=>{
+      setTimeout(()=>{ poll(); if(btn){ btn.disabled=false; btn.textContent='Actualizar'; } }, 3000);
+    }).catch(e=>{
+      if(btn){ btn.disabled=false; btn.textContent='Actualizar'; }
+    });
+}
 document.addEventListener('click', e=>{
-  if(e.target && e.target.classList && e.target.classList.contains('del')){
+  if(!e.target || !e.target.classList) return;
+  if(e.target.classList.contains('del')){
     delSession(e.target.getAttribute('data-name'));
+  } else if(e.target.classList.contains('upd')){
+    updateSession(e.target.getAttribute('data-name'), e.target);
   }
 });
 poll();
@@ -898,11 +940,13 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, '{"error":"not found"}')
 
     def do_POST(self):
-        if self.path == "/api/refresh":
+        from urllib.parse import urlparse, parse_qs
+        parsed = urlparse(self.path)
+        if parsed.path == "/api/refresh":
             cfg = load_config()
             threading.Thread(target=refresh_all, args=(cfg,), daemon=True).start()
             self._send(202, '{"ok":true}')
-        elif self.path == "/api/session":
+        elif parsed.path == "/api/session":
             data = self._read_json()
             if not isinstance(data, dict) or not data.get("name") or not data.get("cookie"):
                 self._send(400, '{"error":"se requiere name y cookie"}')
@@ -911,11 +955,17 @@ class Handler(BaseHTTPRequestHandler):
             cookie = data["cookie"].strip()
             save_session(name, cookie)
             # scrape inmediato en background
-            threading.Thread(target=refresh_scraped, daemon=True).start()
+            threading.Thread(target=refresh_one_session, args=(name,), daemon=True).start()
             self._send(201, json.dumps({"ok": True, "name": name}))
-        elif self.path == "/api/session/scrape":
-            threading.Thread(target=refresh_scraped, daemon=True).start()
-            self._send(202, '{"ok":true}')
+        elif parsed.path == "/api/session/scrape":
+            q = parse_qs(parsed.query)
+            if "name" in q:
+                name = q["name"][0]
+                threading.Thread(target=refresh_one_session, args=(name,), daemon=True).start()
+                self._send(202, json.dumps({"ok": True, "name": name}))
+            else:
+                threading.Thread(target=refresh_scraped, daemon=True).start()
+                self._send(202, '{"ok":true}')
         else:
             self._send(404, '{"error":"not found"}')
 
