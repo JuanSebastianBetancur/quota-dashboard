@@ -672,7 +672,7 @@ HTML_PAGE = """<!doctype html>
   .empty { color:var(--muted); font-style:italic; }
   #loading { display:none; color:var(--muted); font-size:12px; }
   #loading.show { display:inline; }
-  .add-form { background:var(--card); border:1px solid var(--border); border-radius:8px; padding:14px; margin-bottom:16px; }
+  .add-form { background:var(--card); border:1px solid var(--border); border-radius:8px; padding:14px; margin-top:16px; }
   .add-form label { display:block; color:var(--muted); font-size:12px; margin:8px 0 4px; }
   .add-form input, .add-form textarea { width:100%; background:#0d1117; color:var(--fg); border:1px solid var(--border); border-radius:6px; padding:8px; font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; }
   .add-form textarea { min-height:60px; resize:vertical; }
@@ -697,6 +697,7 @@ HTML_PAGE = """<!doctype html>
 <main>
   <section>
     <h2>OpenCode — saldo real (scraping via cookie)</h2>
+    <div class="grid" id="scraped"><div class="empty">sin cuentas scrapeadas — anade una con el formulario de abajo</div></div>
     <div class="add-form">
       <label for="s-name">Nombre de la cuenta (ej: juan@gmail.com)</label>
       <input id="s-name" type="text" placeholder="juan@gmail.com">
@@ -711,11 +712,10 @@ HTML_PAGE = """<!doctype html>
           2. Inicia sesion con Google (o GitHub).<br>
           3. Abre DevTools (F12) &rarr; pestana <b>Application</b> (o Storage) &rarr; <b>Cookies</b> &rarr; <b>https://opencode.ai</b>.<br>
           4. Busca la cookie llamada <code>auth</code> y copia su <b>Value</b>.<br>
-          5. Pegalo arriba. Dura ~1 ano; el dashboard refrescara el saldo cada 5 min sin re-login.
+          5. Pegalo en el formulario. Dura ~1 ano; el dashboard refrescara el saldo cada 5 min sin re-login.
         </div>
       </details>
     </div>
-    <div class="grid" id="scraped"><div class="empty">sin cuentas scrapeadas — anade una con el formulario de arriba</div></div>
   </section>
   <section>
     <h2>OpenAI (claves admin)</h2>
@@ -834,7 +834,7 @@ function render(data){
   else oc.innerHTML = '<div class="empty">Sin cuentas OpenCode en config.json</div>';
   let sc = document.getElementById('scraped');
   if(data.opencode_scraped && data.opencode_scraped.length) sc.innerHTML = data.opencode_scraped.map(renderScraped).join('');
-  else sc.innerHTML = '<div class="empty">sin cuentas scrapeadas — anade una con el formulario de arriba</div>';
+  else sc.innerHTML = '<div class="empty">sin cuentas scrapeadas — anade una con el formulario de abajo</div>';
   let er = document.getElementById('errors');
   if(data.errors && data.errors.length){
     er.innerHTML = '<h2>Errores</h2><ul>'+data.errors.map(e=>'<li class="err">'+esc(e)+'</li>').join('')+'</ul>';
