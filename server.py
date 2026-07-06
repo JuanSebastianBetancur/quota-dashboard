@@ -40,6 +40,7 @@ _state = {
 
 def _http_get(url, headers=None, timeout=20):
     req = urllib.request.Request(url, method="GET")
+    req.add_header("User-Agent", "Mozilla/5.0 (quota-dashboard)")
     if headers:
         for k, v in headers.items():
             req.add_header(k, v)
@@ -176,12 +177,9 @@ def fetch_opencode(account):
     out = {
         "name": name,
         "status": "unknown",
-        "tier": None,
-        "endpoint_used": None,
-        "models_count": None,
-        "free_models": [],
+        "tiers": {},
         "balance_usd": None,
-        "balance_note": "No expuesto via API key (solo dashboard web).",
+        "balance_note": "OpenCode no expone el saldo via API key. Vealo en opencode.ai/auth tras login.",
         "error": None,
     }
     if not key:
@@ -189,43 +187,46 @@ def fetch_opencode(account):
         out["error"] = "Clave vacia en config.json"
         return out
 
-    # Probar los dos bases (zen y go) y usar el primero que responda 200.
-    last_err = None
+    any_ok = False
+    any_401 = False
     for tier, base in OPENCODE_BASES:
         st, body = _http_get(
             f"{base}/models",
             {"Authorization": f"Bearer {key}"},
             timeout=20,
         )
+        tier_info = {
+            "endpoint": f"{base}/models",
+            "http_status": st,
+            "models_count": None,
+            "models": [],
+            "free_models": [],
+            "error": None,
+        }
         if st == 200:
             data = _json_safe(body)
             if isinstance(data, dict):
                 models = data.get("data", [])
-                out["status"] = "ok"
-                out["tier"] = tier
-                out["endpoint_used"] = f"{base}/models"
-                out["models_count"] = len(models)
-                free = [
-                    m.get("id") for m in models
-                    if isinstance(m, dict) and "free" in (m.get("id") or "").lower()
-                ]
-                out["free_models"] = sorted(set(free))
-                return out
+                ids = sorted([m.get("id") for m in models if isinstance(m, dict) and m.get("id")])
+                tier_info["models_count"] = len(ids)
+                tier_info["models"] = ids
+                tier_info["free_models"] = [m for m in ids if "free" in m.lower()]
+                any_ok = True
         elif st == 401:
-            out["status"] = "invalid"
-            out["tier"] = tier
-            out["endpoint_used"] = f"{base}/models"
-            out["error"] = "Clave invalida (401)."
-            return out
-        elif st == 404:
-            last_err = f"{base}/models -> 404"
-            continue
+            tier_info["error"] = "Clave invalida (401)."
+            any_401 = True
         else:
-            last_err = f"{base}/models -> HTTP {st}"
-            continue
+            tier_info["error"] = f"HTTP {st}"
+        out["tiers"][tier] = tier_info
 
-    out["status"] = "error"
-    out["error"] = last_err or "Sin respuesta de ningun endpoint."
+    if any_ok:
+        out["status"] = "ok"
+    elif any_401:
+        out["status"] = "invalid"
+        out["error"] = "Clave invalida (401) en todos los endpoints."
+    else:
+        out["status"] = "error"
+        out["error"] = "Sin respuesta 200 de ningun endpoint."
     return out
 
 
@@ -377,18 +378,22 @@ function renderOpenAI(d){
 }
 function renderOpenCode(d){
   let rows = '';
-  rows += row('Tier', d.tier?esc(d.tier.toUpperCase()):'—');
-  rows += row('Endpoint', esc(d.endpoint_used||'—'));
-  rows += row('Modelos disponibles', d.models_count==null?'—':d.models_count);
-  rows += row('Modelos gratis', d.free_models && d.free_models.length? d.free_models.length : 0);
-  let free = '';
-  if(d.free_models && d.free_models.length){
-    free = '<details><summary>Modelos gratis ('+d.free_models.length+')</summary><table><tbody>'+
-      d.free_models.map(m=>'<tr><td>'+esc(m)+'</td></tr>').join('')+'</tbody></table></details>';
+  let tierDetails = '';
+  if(d.tiers){
+    for(const [tier, info] of Object.entries(d.tiers)){
+      const ok = info.http_status === 200;
+      const label = tier.toUpperCase();
+      const b = ok ? '<span class="badge ok">'+info.models_count+' modelos</span>' : '<span class="badge err">'+esc(info.error||'HTTP '+info.http_status)+'</span>';
+      rows += row(label+' ('+info.http_status+')', b);
+      if(ok && info.models && info.models.length){
+        tierDetails += '<details><summary>'+label+' — '+info.models_count+' modelos ('+info.free_models.length+' gratis)</summary><table><tbody>'+
+          info.models.map(m=>'<tr><td>'+esc(m)+'</td>'+(info.free_models.includes(m)?'<td><span class="badge ok">free</span></td>':'<td></td>')+'</tr>').join('')+'</tbody></table></details>';
+      }
+    }
   }
   let err = d.error ? '<div class="err">'+esc(d.error)+'</div>' : '';
   let note = '<div class="note">'+esc(d.balance_note)+'</div>';
-  return '<div class="card"><div class="name">'+esc(d.name)+' '+badge(d.status)+'</div>'+rows+free+err+note+'</div>';
+  return '<div class="card"><div class="name">'+esc(d.name)+' '+badge(d.status)+'</div>'+rows+tierDetails+err+note+'</div>';
 }
 function row(k,v){ return '<div class="row"><span class="k">'+esc(k)+'</span><span class="v">'+v+'</span></div>'; }
 function render(data){
