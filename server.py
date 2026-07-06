@@ -696,6 +696,19 @@ def chatgpt_whoami(access_token):
     return None
 
 
+def chatgpt_fetch_usage(access_token):
+    """GET chatgpt.com/backend-api/codex/usage con Bearer + OAI-Product-Sku: codex.
+    Devuelve el dict de uso (rate_limit, credits, plan_type, email) o None."""
+    st, data, raw = _http_get_json(
+        "https://chatgpt.com/backend-api/codex/usage",
+        {"Authorization": f"Bearer {access_token}", "OAI-Product-Sku": "codex"},
+        timeout=20,
+    )
+    if st == 200 and isinstance(data, dict):
+        return data
+    return None
+
+
 def _b64url_decode(s):
     s += "=" * (4 - len(s) % 4)
     return base64.urlsafe_b64decode(s)
@@ -778,8 +791,9 @@ def chatgpt_delete_session(name):
 
 
 def chatgpt_fetch_one(sess):
-    """Refresca una cuenta ChatGPT: renueva token + extrae claims del JWT.
-    No usa whoami (suele fallar con tokens de Codex OAuth). Devuelve dict para el estado."""
+    """Refresca una cuenta ChatGPT: renueva token + extrae claims del JWT +
+    consulta /backend-api/codex/usage para rate_limits y credits.
+    Devuelve dict para el estado."""
     name = sess.get("name", "?")
     out = {
         "name": name,
@@ -789,6 +803,9 @@ def chatgpt_fetch_one(sess):
         "plan_label": None,
         "subscription_active_until": sess.get("subscription_active_until"),
         "rate_limits": None,
+        "credits": None,
+        "primary_used_percent": None,
+        "secondary_used_percent": None,
         "error": None,
     }
     refresh_token = sess.get("refresh_token")
@@ -836,6 +853,50 @@ def chatgpt_fetch_one(sess):
         name = email
     sess["name"] = name
     out["name"] = name
+
+    # Consultar uso de Codex (rate_limits + credits). No consume cuota.
+    usage = chatgpt_fetch_usage(access_token)
+    if usage:
+        rl = usage.get("rate_limit") or {}
+        primary = rl.get("primary_window") or {}
+        secondary = rl.get("secondary_window") or {}
+        rate_limits = {
+            "primary": {
+                "used_percent": primary.get("used_percent"),
+                "limit_window_seconds": primary.get("limit_window_seconds"),
+                "reset_after_seconds": primary.get("reset_after_seconds"),
+                "reset_at": primary.get("reset_at"),
+            },
+            "secondary": {
+                "used_percent": secondary.get("used_percent"),
+                "limit_window_seconds": secondary.get("limit_window_seconds"),
+                "reset_after_seconds": secondary.get("reset_after_seconds"),
+                "reset_at": secondary.get("reset_at"),
+            },
+            "limit_reached": rl.get("limit_reached"),
+            "allowed": rl.get("allowed"),
+        }
+        out["rate_limits"] = rate_limits
+        out["primary_used_percent"] = primary.get("used_percent")
+        out["secondary_used_percent"] = secondary.get("used_percent")
+        # Credits
+        credits = usage.get("credits") or {}
+        out["credits"] = {
+            "has_credits": credits.get("has_credits"),
+            "unlimited": credits.get("unlimited"),
+            "balance": credits.get("balance"),
+            "approx_local_messages": credits.get("approx_local_messages"),
+            "approx_cloud_messages": credits.get("approx_cloud_messages"),
+        }
+        # Persistir para no perderlo si la proxima llamada falla
+        sess["last_rate_limits"] = rate_limits
+        sess["last_credits"] = out["credits"]
+        sess["last_usage_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    else:
+        # Si falla, usar el ultimo guardado
+        out["rate_limits"] = sess.get("last_rate_limits")
+        out["credits"] = sess.get("last_credits")
+
     chatgpt_save_session(name, sess)
 
     out["email"] = info.get("email")
@@ -850,12 +911,6 @@ def chatgpt_fetch_one(sess):
         "enterprise": "ChatGPT Enterprise",
     }
     out["plan_label"] = plan_labels.get(pt, pt or "Desconocido")
-
-    # rate_limits: lo leemos del ultimo scrape guardado (si existe), no se fuerza
-    # una llamada a Codex aqui para no consumir cuota. Se actualiza por separado.
-    rl = sess.get("last_rate_limits")
-    if rl:
-        out["rate_limits"] = rl
     out["status"] = "ok"
     return out
 
@@ -1208,10 +1263,19 @@ function renderChatGPT(d){
   if(d.subscription_active_until) rows += row('Suscripcion hasta', fmtDate(d.subscription_active_until));
   if(d.rate_limits){
     let rl = d.rate_limits;
-    if(rl.primary) rows += meterRow('Rolling 5h', {status:'ok', usagePercent:rl.primary.used_percent, resetInSec:rl.primary.resets_in_seconds});
-    if(rl.secondary) rows += meterRow('Semanal', {status:'ok', usagePercent:rl.secondary.used_percent, resetInSec:rl.secondary.resets_in_seconds});
+    if(rl.primary) rows += meterRow('Rolling 5h', {status:'ok', usagePercent:rl.primary.used_percent, resetInSec:rl.primary.reset_after_seconds});
+    if(rl.secondary) rows += meterRow('Semanal', {status:'ok', usagePercent:rl.secondary.used_percent, resetInSec:rl.secondary.reset_after_seconds});
+    if(rl.limit_reached) rows += row('Limite alcanzado', '<span class="badge err">SI</span>');
   } else {
-    rows += row('Uso Codex', '<span class="note">Sin datos aun (se llena al usar Codex)</span>');
+    rows += row('Uso Codex', '<span class="note">Sin datos aun</span>');
+  }
+  if(d.credits){
+    let c = d.credits;
+    if(c.unlimited) rows += row('Credits', '<span class="badge ok">Ilimitados</span>');
+    else if(c.has_credits) rows += row('Credits', esc(c.balance||'0'));
+    let lm = c.approx_local_messages, cm = c.approx_cloud_messages;
+    if(lm) rows += row('Mensajes approx (local)', lm[0]+'–'+lm[1]);
+    if(cm) rows += row('Mensajes approx (cloud)', cm[0]+'–'+cm[1]);
   }
   let err = d.error ? '<div class="err">'+esc(d.error)+'</div>' : '';
   let actions = '<div style="margin-top:10px;display:flex;gap:8px">'
