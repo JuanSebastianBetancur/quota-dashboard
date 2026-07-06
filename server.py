@@ -14,6 +14,7 @@ import os
 import re
 import sys
 import time
+import base64
 import threading
 import urllib.request
 import urllib.error
@@ -633,17 +634,21 @@ def chatgpt_poll_device_login(device_auth_id):
             login["status"] = "error"
             login["error"] = "oauth/token sin access_token/refresh_token"
             return login
-        # Obtener info de la cuenta (whoami) para tener email/name
-        info = chatgpt_whoami(access_token) or {}
+        # Extraer info de la cuenta de los claims del JWT (whoami suele fallar)
+        info = chatgpt_extract_claims(access_token, id_token)
         name = info.get("email") or login.get("user_code", "chatgpt")
         chatgpt_save_session(name, {
             "access_token": access_token,
             "refresh_token": refresh_token,
             "id_token": id_token,
             "email": info.get("email"),
+            "name": info.get("name"),
             "chatgpt_user_id": info.get("chatgpt_user_id"),
             "chatgpt_account_id": info.get("chatgpt_account_id"),
             "chatgpt_plan_type": info.get("chatgpt_plan_type"),
+            "subscription_active_start": info.get("subscription_active_start"),
+            "subscription_active_until": info.get("subscription_active_until"),
+            "organizations": info.get("organizations"),
             "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         })
         login["status"] = "success"
@@ -674,7 +679,8 @@ def chatgpt_refresh_access_token(refresh_token):
 
 
 def chatgpt_whoami(access_token):
-    """GET whoami -> {email, chatgpt_user_id, chatgpt_account_id, chatgpt_plan_type}."""
+    """GET whoami -> {email, chatgpt_user_id, chatgpt_account_id, chatgpt_plan_type}.
+    Nota: este endpoint suele fallar con tokens de Codex OAuth; preferir _jwt_claims."""
     st, data, _ = _http_get_json(
         f"{OPENAI_AUTH}/api/accounts/v1/user-auth-credential/whoami",
         {"Authorization": f"Bearer {access_token}"},
@@ -688,6 +694,52 @@ def chatgpt_whoami(access_token):
             "chatgpt_plan_type": data.get("chatgpt_plan_type"),
         }
     return None
+
+
+def _b64url_decode(s):
+    s += "=" * (4 - len(s) % 4)
+    return base64.urlsafe_b64decode(s)
+
+
+def _jwt_payload(tok):
+    """Decodifica el payload de un JWT sin verificar firma."""
+    if not tok or tok.count(".") < 2:
+        return {}
+    try:
+        return json.loads(_b64url_decode(tok.split(".")[1]))
+    except Exception:
+        return {}
+
+
+def _jwt_token_expired(tok):
+    """Devuelve True si el JWT expiro (campo exp < ahora) o no se pudo leer."""
+    p = _jwt_payload(tok)
+    if not p:
+        return True
+    exp = p.get("exp")
+    if not exp:
+        return True
+    return int(exp) < int(time.time())
+
+
+def chatgpt_extract_claims(access_token, id_token):
+    """Extrae email, name, plan, subscription y account IDs de los claims del JWT.
+    Preferido sobre whoami (que suele fallar con tokens de Codex OAuth)."""
+    idp = _jwt_payload(id_token) if id_token else {}
+    atp = _jwt_payload(access_token) if access_token else {}
+    auth_claim = idp.get("https://api.openai.com/auth") or atp.get("https://api.openai.com/auth") or {}
+    profile_claim = atp.get("https://api.openai.com/profile") or {}
+    out = {
+        "email": idp.get("email") or profile_claim.get("email"),
+        "name": idp.get("name"),
+        "chatgpt_user_id": auth_claim.get("chatgpt_user_id"),
+        "chatgpt_account_id": auth_claim.get("chatgpt_account_id"),
+        "chatgpt_plan_type": auth_claim.get("chatgpt_plan_type"),
+        "subscription_active_start": auth_claim.get("chatgpt_subscription_active_start"),
+        "subscription_active_until": auth_claim.get("chatgpt_subscription_active_until"),
+        "organizations": auth_claim.get("organizations"),
+    }
+    return out
 
 
 def _chatgpt_session_path(name):
@@ -726,7 +778,8 @@ def chatgpt_delete_session(name):
 
 
 def chatgpt_fetch_one(sess):
-    """Refresca una cuenta ChatGPT: renueva token + whoami. Devuelve dict para el estado."""
+    """Refresca una cuenta ChatGPT: renueva token + extrae claims del JWT.
+    No usa whoami (suele fallar con tokens de Codex OAuth). Devuelve dict para el estado."""
     name = sess.get("name", "?")
     out = {
         "name": name,
@@ -734,6 +787,7 @@ def chatgpt_fetch_one(sess):
         "email": sess.get("email"),
         "plan_type": sess.get("chatgpt_plan_type"),
         "plan_label": None,
+        "subscription_active_until": sess.get("subscription_active_until"),
         "rate_limits": None,
         "error": None,
     }
@@ -744,33 +798,49 @@ def chatgpt_fetch_one(sess):
         return out
 
     access_token = sess.get("access_token")
-    # Intentar whoami con el token actual; si falla, refrescar
-    info = chatgpt_whoami(access_token) if access_token else None
-    if info is None:
+    id_token = sess.get("id_token")
+
+    # Si el access_token expiro, refrescarlo primero.
+    if _jwt_token_expired(access_token):
         access_token, new_refresh, err = chatgpt_refresh_access_token(refresh_token)
         if err:
             out["status"] = "expired"
             out["error"] = f"No se pudo refrescar el token: {err}"
             return out
-        # persistir tokens renovados
         sess["access_token"] = access_token
         if new_refresh:
             sess["refresh_token"] = new_refresh
-        info = chatgpt_whoami(access_token)
-        if info is None:
-            out["status"] = "error"
-            out["error"] = "whoami fallo tras refrescar token."
-            chatgpt_save_session(name, sess)
-            return out
-        # actualizar info persistida
-        sess["email"] = info.get("email")
-        sess["chatgpt_user_id"] = info.get("chatgpt_user_id")
-        sess["chatgpt_account_id"] = info.get("chatgpt_account_id")
-        sess["chatgpt_plan_type"] = info.get("chatgpt_plan_type")
+
+    # Extraer claims del JWT (siempre; barato y no requiere red).
+    info = chatgpt_extract_claims(access_token, id_token)
+    if not info.get("email"):
+        out["status"] = "error"
+        out["error"] = "No se pudo extraer email del token."
         chatgpt_save_session(name, sess)
+        return out
+
+    # Actualizar la sesion persistida con la info extraida.
+    sess["email"] = info.get("email")
+    sess["name"] = info.get("name") or sess.get("name")
+    sess["chatgpt_user_id"] = info.get("chatgpt_user_id")
+    sess["chatgpt_account_id"] = info.get("chatgpt_account_id")
+    sess["chatgpt_plan_type"] = info.get("chatgpt_plan_type")
+    sess["subscription_active_start"] = info.get("subscription_active_start")
+    sess["subscription_active_until"] = info.get("subscription_active_until")
+    sess["organizations"] = info.get("organizations")
+
+    # Si el nombre actual no es el email, renombrar el archivo de sesion al email.
+    email = info.get("email")
+    if email and name != email:
+        chatgpt_delete_session(name)
+        name = email
+    sess["name"] = name
+    out["name"] = name
+    chatgpt_save_session(name, sess)
 
     out["email"] = info.get("email")
     out["plan_type"] = info.get("chatgpt_plan_type")
+    out["subscription_active_until"] = info.get("subscription_active_until")
     pt = info.get("chatgpt_plan_type") or ""
     plan_labels = {
         "plus": "ChatGPT Plus",
@@ -786,9 +856,7 @@ def chatgpt_fetch_one(sess):
     rl = sess.get("last_rate_limits")
     if rl:
         out["rate_limits"] = rl
-        out["status"] = "ok"
-    else:
-        out["status"] = "ok"
+    out["status"] = "ok"
     return out
 
 
@@ -1128,23 +1196,30 @@ function updateSession(name, btn){
       if(btn){ btn.disabled=false; btn.textContent='Actualizar'; }
     });
 }
+function fmtDate(s){
+  if(!s) return '—';
+  try { let d=new Date(s); return d.toLocaleDateString(undefined,{year:'numeric',month:'short',day:'numeric'}); }
+  catch(e){ return esc(s); }
+}
 function renderChatGPT(d){
   let rows = '';
   if(d.email) rows += row('Email', esc(d.email));
   rows += row('Plan', esc(d.plan_label||'—'));
+  if(d.subscription_active_until) rows += row('Suscripcion hasta', fmtDate(d.subscription_active_until));
   if(d.rate_limits){
     let rl = d.rate_limits;
     if(rl.primary) rows += meterRow('Rolling 5h', {status:'ok', usagePercent:rl.primary.used_percent, resetInSec:rl.primary.resets_in_seconds});
     if(rl.secondary) rows += meterRow('Semanal', {status:'ok', usagePercent:rl.secondary.used_percent, resetInSec:rl.secondary.resets_in_seconds});
   } else {
-    rows += row('Uso Codex', '<span class="note">Sin datos de rate_limits aun</span>');
+    rows += row('Uso Codex', '<span class="note">Sin datos aun (se llena al usar Codex)</span>');
   }
   let err = d.error ? '<div class="err">'+esc(d.error)+'</div>' : '';
   let actions = '<div style="margin-top:10px;display:flex;gap:8px">'
     + '<button class="upd" data-type="chatgpt" data-name="'+esc(d.name)+'">Actualizar</button>'
     + '<button class="del" data-type="chatgpt" data-name="'+esc(d.name)+'">Eliminar</button>'
     + '</div>';
-  return '<div class="card"><div class="name">'+esc(d.name)+' '+badge(d.status)+'</div>'+rows+err+actions+'</div>';
+  let display = d.email || d.name;
+  return '<div class="card"><div class="name">'+esc(display)+' '+badge(d.status)+'</div>'+rows+err+actions+'</div>';
 }
 function chatgptStartLogin(){
   let msg = document.getElementById('cg-msg');
