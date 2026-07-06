@@ -8,3 +8,4 @@ daemon.debug.log
 .gitignore
 config.json
 sessions/
+chatgpt_sessions/

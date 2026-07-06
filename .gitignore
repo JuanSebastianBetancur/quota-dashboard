@@ -7,4 +7,5 @@ daemon.debug.log
 .env
 config.json
 sessions/
+chatgpt_sessions/
 config.json

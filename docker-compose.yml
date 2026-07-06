@@ -11,4 +11,6 @@ services:
       - ./config.json:/app/config.json:ro
       # Persiste las sesiones (cookies) entre reinicios del contenedor.
       - ./sessions:/app/sessions
+      # Persiste las sesiones de ChatGPT (refresh tokens) entre reinicios.
+      - ./chatgpt_sessions:/app/chatgpt_sessions
     restart: unless-stopped

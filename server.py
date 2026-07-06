@@ -2,8 +2,8 @@
 """
 Dashboard web unificado de cuotas para multiples cuentas:
   - OpenAI (claves admin sk-admin-* / claves normales sk-*)
-  - OpenCode Zen / OpenCode Go (claves opencode.ai/auth)
   - OpenCode saldo real via scraping de cookie de sesion (billing/usage/go)
+  - ChatGPT Plus/Pro + Codex via OAuth device-code (whoami + rate_limits)
 
 Sirve una pagina en http://127.0.0.1:8765 (configurable en config.json).
 Sin dependencias externas: solo stdlib de Python.
@@ -23,10 +23,16 @@ from datetime import datetime, timezone
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(HERE, "config.json")
 SESSIONS_DIR = os.path.join(HERE, "sessions")
+CHATGPT_SESSIONS_DIR = os.path.join(HERE, "chatgpt_sessions")
 os.makedirs(SESSIONS_DIR, exist_ok=True)
+os.makedirs(CHATGPT_SESSIONS_DIR, exist_ok=True)
 
 OPENAI_BASE = "https://api.openai.com/v1"
 OPENCODE_WEB = "https://opencode.ai"
+OPENAI_AUTH = "https://auth.openai.com"
+OPENAI_CHATGPT_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
+OPENAI_DEVICE_VERIFY_URL = "https://auth.openai.com/codex/device"
+OPENAI_OAUTH_REDIRECT = "https://auth.openai.com/deviceauth/callback"
 # 1 USD = 100,000,000 unidades internas (segun formatBalance del repo)
 UNIT_DIVISOR = 100_000_000
 
@@ -35,8 +41,13 @@ _state = {
     "updated_at": None,
     "openai": [],
     "opencode_scraped": [],
+    "chatgpt": [],
     "errors": [],
 }
+
+# Estado de logins device-code en curso (no persistente)
+_device_logins = {}
+_device_logins_lock = threading.Lock()
 
 
 # ---------- helpers HTTP ----------
@@ -493,6 +504,319 @@ def refresh_one_session(name):
     return True
 
 
+# ---------- ChatGPT/Codex via OAuth device-code ----------
+
+def _http_post_json(url, payload, headers=None, timeout=20):
+    """POST JSON y devuelve (status, json_dict_or_None, raw_body)."""
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(url, data=data, method="POST")
+    req.add_header("Content-Type", "application/json")
+    req.add_header("User-Agent", "Mozilla/5.0 (quota-dashboard)")
+    if headers:
+        for k, v in headers.items():
+            req.add_header(k, v)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            body = r.read().decode("utf-8", errors="replace")
+            return r.status, _json_safe(body), body
+    except urllib.error.HTTPError as e:
+        body = ""
+        try:
+            body = e.read().decode("utf-8", errors="replace")
+        except Exception:
+            pass
+        return e.code, _json_safe(body), body
+    except Exception as e:
+        return 0, None, f"{type(e).__name__}: {e}"
+
+
+def _http_get_json(url, headers=None, timeout=20):
+    """GET con Bearer opcional y devuelve (status, json_dict_or_None, raw_body)."""
+    req = urllib.request.Request(url, method="GET")
+    req.add_header("User-Agent", "Mozilla/5.0 (quota-dashboard)")
+    if headers:
+        for k, v in headers.items():
+            req.add_header(k, v)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            body = r.read().decode("utf-8", errors="replace")
+            return r.status, _json_safe(body), body
+    except urllib.error.HTTPError as e:
+        body = ""
+        try:
+            body = e.read().decode("utf-8", errors="replace")
+        except Exception:
+            pass
+        return e.code, _json_safe(body), body
+    except Exception as e:
+        return 0, None, f"{type(e).__name__}: {e}"
+
+
+def chatgpt_start_device_login():
+    """Inicia el device-code flow. Devuelve dict con device_auth_id, user_code, url, interval, expires_at."""
+    st, data, raw = _http_post_json(
+        f"{OPENAI_AUTH}/api/accounts/deviceauth/usercode",
+        {"client_id": OPENAI_CHATGPT_CLIENT_ID},
+        timeout=20,
+    )
+    if st != 200 or not isinstance(data, dict):
+        return {"error": f"usercode HTTP {st}: {raw[:200]}"}
+    device_auth_id = data.get("device_auth_id")
+    user_code = data.get("user_code")
+    interval = int(data.get("interval", 5) or 5)
+    expires_at = data.get("expires_at")
+    login = {
+        "device_auth_id": device_auth_id,
+        "user_code": user_code,
+        "url": f"{OPENAI_DEVICE_VERIFY_URL}",
+        "interval": interval,
+        "expires_at": expires_at,
+        "status": "pending",
+    }
+    with _device_logins_lock:
+        _device_logins[device_auth_id] = login
+    return login
+
+
+def chatgpt_poll_device_login(device_auth_id):
+    """Poll del device-code. Devuelve el login actualizado (pending/success/error)."""
+    with _device_logins_lock:
+        login = _device_logins.get(device_auth_id)
+    if not login:
+        return {"error": "login no encontrado (expiro o nunca inicio)"}
+    user_code = login.get("user_code")
+    st, data, raw = _http_post_json(
+        f"{OPENAI_AUTH}/api/accounts/deviceauth/token",
+        {"device_auth_id": device_auth_id, "user_code": user_code},
+        timeout=20,
+    )
+    # 403 con code=deviceauth_authorization_pending -> seguir esperando
+    if st == 403 and isinstance(data, dict):
+        code = (data.get("error") or {}).get("code", "")
+        if code == "deviceauth_authorization_pending":
+            login["status"] = "pending"
+            return login
+        if code == "deviceauth_authorization_slow_down":
+            login["status"] = "pending"
+            login["interval"] = login.get("interval", 5) + 5
+            return login
+        login["status"] = "error"
+        login["error"] = f"poll: {code or raw[:120]}"
+        return login
+    if st == 200 and isinstance(data, dict):
+        auth_code = data.get("authorization_code")
+        code_verifier = data.get("code_verifier")
+        if not auth_code or not code_verifier:
+            login["status"] = "error"
+            login["error"] = "respuesta sin authorization_code/code_verifier"
+            return login
+        # Intercambiar el authorization_code por tokens
+        st2, data2, raw2 = _http_post_json(
+            f"{OPENAI_AUTH}/oauth/token",
+            {
+                "grant_type": "authorization_code",
+                "redirect_uri": OPENAI_OAUTH_REDIRECT,
+                "code_verifier": code_verifier,
+                "client_id": OPENAI_CHATGPT_CLIENT_ID,
+                "code": auth_code,
+            },
+            timeout=20,
+        )
+        if st2 != 200 or not isinstance(data2, dict):
+            login["status"] = "error"
+            login["error"] = f"oauth/token HTTP {st2}: {raw2[:200]}"
+            return login
+        access_token = data2.get("access_token")
+        refresh_token = data2.get("refresh_token")
+        id_token = data2.get("id_token")
+        if not access_token or not refresh_token:
+            login["status"] = "error"
+            login["error"] = "oauth/token sin access_token/refresh_token"
+            return login
+        # Obtener info de la cuenta (whoami) para tener email/name
+        info = chatgpt_whoami(access_token) or {}
+        name = info.get("email") or login.get("user_code", "chatgpt")
+        chatgpt_save_session(name, {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "id_token": id_token,
+            "email": info.get("email"),
+            "chatgpt_user_id": info.get("chatgpt_user_id"),
+            "chatgpt_account_id": info.get("chatgpt_account_id"),
+            "chatgpt_plan_type": info.get("chatgpt_plan_type"),
+            "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        })
+        login["status"] = "success"
+        login["name"] = name
+        # limpiar del mapa de logins en curso
+        with _device_logins_lock:
+            _device_logins.pop(device_auth_id, None)
+        return login
+    login["status"] = "error"
+    login["error"] = f"poll HTTP {st}: {raw[:200]}"
+    return login
+
+
+def chatgpt_refresh_access_token(refresh_token):
+    """Renueva el access_token usando el refresh_token. Devuelve (access_token, refresh_token, error)."""
+    st, data, raw = _http_post_json(
+        f"{OPENAI_AUTH}/oauth/token",
+        {
+            "grant_type": "refresh_token",
+            "client_id": OPENAI_CHATGPT_CLIENT_ID,
+            "refresh_token": refresh_token,
+        },
+        timeout=20,
+    )
+    if st != 200 or not isinstance(data, dict):
+        return None, None, f"refresh HTTP {st}: {raw[:200]}"
+    return data.get("access_token"), data.get("refresh_token"), None
+
+
+def chatgpt_whoami(access_token):
+    """GET whoami -> {email, chatgpt_user_id, chatgpt_account_id, chatgpt_plan_type}."""
+    st, data, _ = _http_get_json(
+        f"{OPENAI_AUTH}/api/accounts/v1/user-auth-credential/whoami",
+        {"Authorization": f"Bearer {access_token}"},
+        timeout=20,
+    )
+    if st == 200 and isinstance(data, dict):
+        return {
+            "email": data.get("email"),
+            "chatgpt_user_id": data.get("chatgpt_user_id"),
+            "chatgpt_account_id": data.get("chatgpt_account_id"),
+            "chatgpt_plan_type": data.get("chatgpt_plan_type"),
+        }
+    return None
+
+
+def _chatgpt_session_path(name):
+    safe = re.sub(r"[^A-Za-z0-9_.@-]", "_", name)
+    return os.path.join(CHATGPT_SESSIONS_DIR, f"{safe}.json")
+
+
+def chatgpt_list_sessions():
+    sessions = []
+    if not os.path.isdir(CHATGPT_SESSIONS_DIR):
+        return sessions
+    for fn in sorted(os.listdir(CHATGPT_SESSIONS_DIR)):
+        if not fn.endswith(".json"):
+            continue
+        try:
+            with open(os.path.join(CHATGPT_SESSIONS_DIR, fn), "r", encoding="utf-8") as f:
+                sessions.append(json.load(f))
+        except Exception:
+            pass
+    return sessions
+
+
+def chatgpt_save_session(name, data):
+    data["name"] = name
+    with open(_chatgpt_session_path(name), "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+    return data
+
+
+def chatgpt_delete_session(name):
+    p = _chatgpt_session_path(name)
+    if os.path.exists(p):
+        os.remove(p)
+        return True
+    return False
+
+
+def chatgpt_fetch_one(sess):
+    """Refresca una cuenta ChatGPT: renueva token + whoami. Devuelve dict para el estado."""
+    name = sess.get("name", "?")
+    out = {
+        "name": name,
+        "status": "unknown",
+        "email": sess.get("email"),
+        "plan_type": sess.get("chatgpt_plan_type"),
+        "plan_label": None,
+        "rate_limits": None,
+        "error": None,
+    }
+    refresh_token = sess.get("refresh_token")
+    if not refresh_token:
+        out["status"] = "missing-token"
+        out["error"] = "Sin refresh_token."
+        return out
+
+    access_token = sess.get("access_token")
+    # Intentar whoami con el token actual; si falla, refrescar
+    info = chatgpt_whoami(access_token) if access_token else None
+    if info is None:
+        access_token, new_refresh, err = chatgpt_refresh_access_token(refresh_token)
+        if err:
+            out["status"] = "expired"
+            out["error"] = f"No se pudo refrescar el token: {err}"
+            return out
+        # persistir tokens renovados
+        sess["access_token"] = access_token
+        if new_refresh:
+            sess["refresh_token"] = new_refresh
+        info = chatgpt_whoami(access_token)
+        if info is None:
+            out["status"] = "error"
+            out["error"] = "whoami fallo tras refrescar token."
+            chatgpt_save_session(name, sess)
+            return out
+        # actualizar info persistida
+        sess["email"] = info.get("email")
+        sess["chatgpt_user_id"] = info.get("chatgpt_user_id")
+        sess["chatgpt_account_id"] = info.get("chatgpt_account_id")
+        sess["chatgpt_plan_type"] = info.get("chatgpt_plan_type")
+        chatgpt_save_session(name, sess)
+
+    out["email"] = info.get("email")
+    out["plan_type"] = info.get("chatgpt_plan_type")
+    pt = info.get("chatgpt_plan_type") or ""
+    plan_labels = {
+        "plus": "ChatGPT Plus",
+        "pro": "ChatGPT Pro",
+        "prolite": "ChatGPT Plus",
+        "team": "ChatGPT Team",
+        "enterprise": "ChatGPT Enterprise",
+    }
+    out["plan_label"] = plan_labels.get(pt, pt or "Desconocido")
+
+    # rate_limits: lo leemos del ultimo scrape guardado (si existe), no se fuerza
+    # una llamada a Codex aqui para no consumir cuota. Se actualiza por separado.
+    rl = sess.get("last_rate_limits")
+    if rl:
+        out["rate_limits"] = rl
+        out["status"] = "ok"
+    else:
+        out["status"] = "ok"
+    return out
+
+
+def chatgpt_refresh_all():
+    """Refresca todas las cuentas ChatGPT y actualiza el estado."""
+    sessions = chatgpt_list_sessions()
+    results = []
+
+    def worker(s):
+        try:
+            results.append(chatgpt_fetch_one(s))
+        except Exception as e:
+            results.append({
+                "name": s.get("name", "?"),
+                "status": "error",
+                "error": f"{type(e).__name__}: {e}",
+            })
+
+    threads = [threading.Thread(target=worker, args=(s,)) for s in sessions]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+    results.sort(key=lambda x: x.get("name", ""))
+    with _state_lock:
+        _state["chatgpt"] = results
+
+
 # ---------- refresco ----------
 
 def refresh_all(config):
@@ -519,6 +843,12 @@ def refresh_all(config):
     except Exception as e:
         errors.append(f"scraped: {e}")
 
+    # refresco de cuentas ChatGPT/Codex
+    try:
+        chatgpt_refresh_all()
+    except Exception as e:
+        errors.append(f"chatgpt: {e}")
+
     openai_results.sort(key=lambda x: x.get("name", ""))
 
     with _state_lock:
@@ -539,12 +869,13 @@ def background_loop(config):
 
 
 def background_scrape_loop(config):
-    """Refresco mas frecuente para el saldo scrapeado (cada 5 min)."""
+    """Refresco mas frecuente para el saldo scrapeado y ChatGPT (cada 5 min)."""
     interval = max(60, int(config.get("scrape_refresh_seconds", 300)))
     while True:
         time.sleep(interval)
         try:
             refresh_scraped()
+            chatgpt_refresh_all()
         except Exception as e:
             with _state_lock:
                 _state["errors"].append(f"scrape_loop: {e}")
@@ -633,6 +964,33 @@ HTML_PAGE = """<!doctype html>
           3. Abre DevTools (F12) &rarr; pestana <b>Application</b> (o Storage) &rarr; <b>Cookies</b> &rarr; <b>https://opencode.ai</b>.<br>
           4. Busca la cookie llamada <code>auth</code> y copia su <b>Value</b>.<br>
           5. Pegalo en el formulario. Dura ~1 ano; el dashboard refrescara el saldo cada 5 min sin re-login.
+        </div>
+      </details>
+    </div>
+  </section>
+  <section>
+    <h2>ChatGPT Plus / Pro + Codex (device-code OAuth)</h2>
+    <div class="grid" id="chatgpt"><div class="empty">sin cuentas — inicia login abajo</div></div>
+    <div class="add-form" id="chatgpt-login-form">
+      <label>Iniciar sesion de una cuenta de ChatGPT</label>
+      <button onclick="chatgptStartLogin()">Iniciar login (device-code)</button>
+      <span id="cg-msg" class="err" style="margin-left:10px"></span>
+      <div id="cg-login-box" style="display:none;margin-top:12px;padding:12px;background:#0d1117;border-radius:6px;border:1px solid var(--border)">
+        <div style="margin-bottom:8px">Abre esta URL en tu navegador e ingresa el codigo:</div>
+        <div style="font-size:13px;color:var(--muted);margin-bottom:4px">URL:</div>
+        <div id="cg-login-url" style="font-family:monospace;color:var(--accent);word-break:break-all;margin-bottom:8px"></div>
+        <div style="font-size:13px;color:var(--muted);margin-bottom:4px">Codigo:</div>
+        <div id="cg-login-code" style="font-size:24px;font-weight:700;letter-spacing:2px;font-family:monospace;margin-bottom:8px"></div>
+        <div id="cg-login-status" style="color:var(--warn);font-size:12px">esperando autorizacion...</div>
+      </div>
+      <details>
+        <summary>Requisito previo (una sola vez por cuenta)</summary>
+        <div class="hint">
+          Antes de iniciar el login, activa <b>Device-code login</b> en ChatGPT:<br>
+          1. Abre <a style="color:var(--accent)" href="https://chatgpt.com/#settings/Account" target="_blank">chatgpt.com &rarr; Settings &rarr; Account</a>.<br>
+          2. Seccion <b>Security</b> &rarr; activa <b>"Allow device code login"</b>.<br>
+          3. Vuelve aqui y pulsa "Iniciar login".<br>
+          El refresh token dura indefinidamente (no requiere re-login).
         </div>
       </details>
     </div>
@@ -728,6 +1086,9 @@ function render(data){
   let sc = document.getElementById('scraped');
   if(data.opencode_scraped && data.opencode_scraped.length) sc.innerHTML = data.opencode_scraped.map(renderScraped).join('');
   else sc.innerHTML = '<div class="empty">sin cuentas scrapeadas — anade una con el formulario de abajo</div>';
+  let cg = document.getElementById('chatgpt');
+  if(data.chatgpt && data.chatgpt.length) cg.innerHTML = data.chatgpt.map(renderChatGPT).join('');
+  else cg.innerHTML = '<div class="empty">sin cuentas — inicia login con el formulario de abajo</div>';
   let er = document.getElementById('errors');
   if(data.errors && data.errors.length){
     er.innerHTML = '<h2>Errores</h2><ul>'+data.errors.map(e=>'<li class="err">'+esc(e)+'</li>').join('')+'</ul>';
@@ -767,12 +1128,84 @@ function updateSession(name, btn){
       if(btn){ btn.disabled=false; btn.textContent='Actualizar'; }
     });
 }
+function renderChatGPT(d){
+  let rows = '';
+  if(d.email) rows += row('Email', esc(d.email));
+  rows += row('Plan', esc(d.plan_label||'—'));
+  if(d.rate_limits){
+    let rl = d.rate_limits;
+    if(rl.primary) rows += meterRow('Rolling 5h', {status:'ok', usagePercent:rl.primary.used_percent, resetInSec:rl.primary.resets_in_seconds});
+    if(rl.secondary) rows += meterRow('Semanal', {status:'ok', usagePercent:rl.secondary.used_percent, resetInSec:rl.secondary.resets_in_seconds});
+  } else {
+    rows += row('Uso Codex', '<span class="note">Sin datos de rate_limits aun</span>');
+  }
+  let err = d.error ? '<div class="err">'+esc(d.error)+'</div>' : '';
+  let actions = '<div style="margin-top:10px;display:flex;gap:8px">'
+    + '<button class="upd" data-type="chatgpt" data-name="'+esc(d.name)+'">Actualizar</button>'
+    + '<button class="del" data-type="chatgpt" data-name="'+esc(d.name)+'">Eliminar</button>'
+    + '</div>';
+  return '<div class="card"><div class="name">'+esc(d.name)+' '+badge(d.status)+'</div>'+rows+err+actions+'</div>';
+}
+function chatgptStartLogin(){
+  let msg = document.getElementById('cg-msg');
+  msg.textContent = 'iniciando...';
+  fetch('/api/chatgpt/login',{method:'POST'})
+    .then(r=>r.json()).then(d=>{
+      if(d.error){ msg.textContent = d.error; return; }
+      msg.textContent = '';
+      document.getElementById('cg-login-box').style.display = 'block';
+      document.getElementById('cg-login-url').textContent = d.url;
+      document.getElementById('cg-login-code').textContent = d.user_code;
+      document.getElementById('cg-login-status').textContent = 'esperando autorizacion...';
+      chatgptPollLogin(d.device_auth_id, d.interval||5);
+    }).catch(e=>{ msg.textContent = 'error: '+e; });
+}
+let _cgPollTimer = null;
+function chatgptPollLogin(did, interval){
+  if(_cgPollTimer) clearTimeout(_cgPollTimer);
+  let statusEl = document.getElementById('cg-login-status');
+  let poll = () => {
+    fetch('/api/chatgpt/login/poll?device_auth_id='+encodeURIComponent(did),{method:'POST'})
+      .then(r=>r.json()).then(d=>{
+        if(d.status === 'success'){
+          statusEl.style.color = 'var(--ok)';
+          statusEl.textContent = 'Cuenta anadida: '+(d.name||'ok');
+          setTimeout(()=>{ pollData(); }, 1500);
+        } else if(d.status === 'pending'){
+          _cgPollTimer = setTimeout(poll, (interval||5)*1000);
+        } else {
+          statusEl.style.color = 'var(--err)';
+          statusEl.textContent = 'error: '+(d.error||'desconocido');
+        }
+      }).catch(e=>{
+        statusEl.style.color = 'var(--err)';
+        statusEl.textContent = 'error de red: '+e;
+      });
+  };
+  _cgPollTimer = setTimeout(poll, (interval||5)*1000);
+}
+function chatgptRefresh(name, btn){
+  if(btn){ btn.disabled = true; btn.textContent = 'Actualizando...'; }
+  fetch('/api/chatgpt/refresh?name='+encodeURIComponent(name),{method:'POST'})
+    .then(r=>r.json()).then(d=>{
+      setTimeout(()=>{ pollData(); if(btn){ btn.disabled=false; btn.textContent='Actualizar'; } }, 3000);
+    }).catch(e=>{ if(btn){ btn.disabled=false; btn.textContent='Actualizar'; } });
+}
+function chatgptDelete(name){
+  if(!confirm('Eliminar la cuenta ChatGPT "'+name+'"?')) return;
+  fetch('/api/chatgpt/session?name='+encodeURIComponent(name),{method:'DELETE'})
+    .then(r=>r.json()).then(d=>{ if(d.ok) pollData(); }).catch(()=>{});
+}
+function pollData(){ poll(); }
 document.addEventListener('click', e=>{
   if(!e.target || !e.target.classList) return;
+  let type = e.target.getAttribute('data-type');
   if(e.target.classList.contains('del')){
-    delSession(e.target.getAttribute('data-name'));
+    if(type === 'chatgpt') chatgptDelete(e.target.getAttribute('data-name'));
+    else delSession(e.target.getAttribute('data-name'));
   } else if(e.target.classList.contains('upd')){
-    updateSession(e.target.getAttribute('data-name'), e.target);
+    if(type === 'chatgpt') chatgptRefresh(e.target.getAttribute('data-name'), e.target);
+    else updateSession(e.target.getAttribute('data-name'), e.target);
   }
 });
 poll();
@@ -808,12 +1241,14 @@ class Handler(BaseHTTPRequestHandler):
             return None
 
     def do_GET(self):
-        if self.path in ("/", "/index.html"):
+        from urllib.parse import urlparse, parse_qs
+        parsed = urlparse(self.path)
+        if parsed.path in ("/", "/index.html"):
             self._send(200, HTML_PAGE, "text/html; charset=utf-8")
-        elif self.path == "/api/data":
+        elif parsed.path == "/api/data":
             with _state_lock:
                 self._send(200, json.dumps(_state))
-        elif self.path == "/api/config":
+        elif parsed.path == "/api/config":
             cfg = load_config()
             safe = {
                 "port": cfg.get("port"),
@@ -822,12 +1257,26 @@ class Handler(BaseHTTPRequestHandler):
                 "scrape_refresh_seconds": cfg.get("scrape_refresh_seconds", 300),
                 "openai_accounts": [a.get("name") for a in cfg.get("openai_accounts", [])],
                 "scraped_accounts": [s.get("name") for s in list_sessions()],
+                "chatgpt_accounts": [s.get("name") for s in chatgpt_list_sessions()],
             }
             self._send(200, json.dumps(safe))
-        elif self.path == "/api/sessions":
+        elif parsed.path == "/api/sessions":
             sessions = [{"name": s.get("name"), "workspace_id": s.get("workspace_id"),
                          "updated_at": s.get("updated_at")} for s in list_sessions()]
             self._send(200, json.dumps(sessions))
+        elif parsed.path == "/api/chatgpt/sessions":
+            sessions = [{"name": s.get("name"), "email": s.get("email"),
+                         "plan_type": s.get("chatgpt_plan_type")} for s in chatgpt_list_sessions()]
+            self._send(200, json.dumps(sessions))
+        elif parsed.path == "/api/chatgpt/login/status":
+            q = parse_qs(parsed.query)
+            did = q.get("device_auth_id", [None])[0]
+            if not did:
+                self._send(400, '{"error":"se requiere device_auth_id"}')
+                return
+            with _device_logins_lock:
+                login = _device_logins.get(did, {"status": "unknown", "error": "login expirado o no encontrado"})
+            self._send(200, json.dumps(login))
         else:
             self._send(404, '{"error":"not found"}')
 
@@ -846,7 +1295,6 @@ class Handler(BaseHTTPRequestHandler):
             name = data["name"].strip()
             cookie = data["cookie"].strip()
             save_session(name, cookie)
-            # scrape inmediato en background
             threading.Thread(target=refresh_one_session, args=(name,), daemon=True).start()
             self._send(201, json.dumps({"ok": True, "name": name}))
         elif parsed.path == "/api/session/scrape":
@@ -858,18 +1306,63 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 threading.Thread(target=refresh_scraped, daemon=True).start()
                 self._send(202, '{"ok":true}')
+        elif parsed.path == "/api/chatgpt/login":
+            # Iniciar device-code flow
+            login = chatgpt_start_device_login()
+            self._send(200, json.dumps(login))
+        elif parsed.path == "/api/chatgpt/login/poll":
+            q = parse_qs(parsed.query)
+            did = q.get("device_auth_id", [None])[0]
+            if not did:
+                self._send(400, '{"error":"se requiere device_auth_id"}')
+                return
+            result = chatgpt_poll_device_login(did)
+            self._send(200, json.dumps(result))
+        elif parsed.path == "/api/chatgpt/refresh":
+            q = parse_qs(parsed.query)
+            if "name" in q:
+                name = q["name"][0]
+                sess = next((s for s in chatgpt_list_sessions() if s.get("name") == name), None)
+                if not sess:
+                    self._send(404, '{"error":"no encontrada"}')
+                    return
+                def _do():
+                    res = chatgpt_fetch_one(sess)
+                    with _state_lock:
+                        current = list(_state.get("chatgpt", []))
+                        for i, s in enumerate(current):
+                            if s.get("name") == name:
+                                current[i] = res
+                                break
+                        else:
+                            current.append(res)
+                        current.sort(key=lambda x: x.get("name", ""))
+                        _state["chatgpt"] = current
+                threading.Thread(target=_do, daemon=True).start()
+                self._send(202, json.dumps({"ok": True, "name": name}))
+            else:
+                threading.Thread(target=chatgpt_refresh_all, daemon=True).start()
+                self._send(202, '{"ok":true}')
         else:
             self._send(404, '{"error":"not found"}')
 
     def do_DELETE(self):
         from urllib.parse import urlparse, parse_qs
-        q = parse_qs(urlparse(self.path).query)
-        if self.path.startswith("/api/session") and "name" in q:
+        parsed = urlparse(self.path)
+        q = parse_qs(parsed.query)
+        if parsed.path == "/api/session" and "name" in q:
             name = q["name"][0]
             ok = delete_session(name)
             if ok:
-                # re-scrape para quitar la cuenta del estado
                 threading.Thread(target=refresh_scraped, daemon=True).start()
+                self._send(200, json.dumps({"ok": True, "name": name}))
+            else:
+                self._send(404, json.dumps({"error": "no encontrada"}))
+        elif parsed.path == "/api/chatgpt/session" and "name" in q:
+            name = q["name"][0]
+            ok = chatgpt_delete_session(name)
+            if ok:
+                threading.Thread(target=chatgpt_refresh_all, daemon=True).start()
                 self._send(200, json.dumps({"ok": True, "name": name}))
             else:
                 self._send(404, json.dumps({"error": "no encontrada"}))
