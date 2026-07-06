@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+*.log
+*.pid
+server.log
+daemon.debug.log
+.env
+config.json

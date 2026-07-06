@@ -1,0 +1,13 @@
+{
+  "port": 8765,
+  "host": "0.0.0.0",
+  "refresh_seconds": 300,
+  "openai_accounts": [
+    { "name": "openai-admin-1", "key": "sk-admin-REPLACE_ME" },
+    { "name": "openai-admin-2", "key": "sk-admin-REPLACE_ME" }
+  ],
+  "opencode_accounts": [
+    { "name": "opencode-zen-1", "key": "oc_zen_REPLACE_ME" },
+    { "name": "opencode-go-1",  "key": "oc_go_REPLACE_ME"  }
+  ]
+}

@@ -1,0 +1,12 @@
+services:
+  quota-dashboard:
+    build: .
+    image: quota-dashboard:latest
+    container_name: quota-dashboard
+    ports:
+      - "8765:8765"
+    volumes:
+      # Monta tu config.json real (con tus claves) sobre el template.
+      # Si no existe, se usa config.example.json del interior de la imagen.
+      - ./config.json:/app/config.json:ro
+    restart: unless-stopped
