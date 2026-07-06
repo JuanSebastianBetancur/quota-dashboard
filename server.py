@@ -273,18 +273,19 @@ def normalize_cookie(raw):
 
 
 def discover_workspace_id(cookie):
-    """Descubre el workspace ID siguiendo el redirect de opencode.ai/."""
+    """Descubre el workspace ID. La pagina /go (con cookie) lo contiene."""
     headers = {"Cookie": cookie}
-    for path in ["/", "/workspace"]:
+    for path in ["/go", "/", "/workspace"]:
         st, final_url, body = _http_get_full(f"{OPENCODE_WEB}{path}", headers, timeout=25)
         text = f"{final_url or ''} {body or ''}"
-        m = re.search(r"workspace/(wrk_[A-Z0-9]+)", text)
+        m = re.search(r"(wrk_[A-Z0-9]+)", text)
         if m:
             return m.group(1)
     return None
 
 
 def _usd(units):
+    """Convierte unidades internas a USD (1 USD = 100,000,000 unidades)."""
     if units is None:
         return None
     try:
@@ -294,18 +295,25 @@ def _usd(units):
 
 
 def _extract_int(body, key):
-    m = re.search(r'"' + re.escape(key) + r'"\s*:\s*(-?\d+)', body)
+    # SolidStart serializa como JS: key:value o "key":value
+    m = re.search(r'(?:"' + re.escape(key) + r'"|' + re.escape(key) + r')\s*:\s*(-?\d+)', body)
     return int(m.group(1)) if m else None
 
 
 def _extract_bool(body, key):
-    m = re.search(r'"' + re.escape(key) + r'"\s*:\s*(true|false|null)', body)
+    m = re.search(r'(?:"' + re.escape(key) + r'"|' + re.escape(key) + r')\s*:\s*(true|false|null)', body)
     return m.group(1) if m else None
 
 
 def _extract_str(body, key):
-    m = re.search(r'"' + re.escape(key) + r'"\s*:\s*"([^"]*)"', body)
+    m = re.search(r'(?:"' + re.escape(key) + r'"|' + re.escape(key) + r')\s*:\s*"([^"]*)"', body)
     return m.group(1) if m else None
+
+
+def _extract_raw(body, key):
+    # valor crudo hasta la siguiente coma o } (para detectar objetos/refs)
+    m = re.search(r'(?:"' + re.escape(key) + r'"|' + re.escape(key) + r')\s*:\s*([^,}<]+)', body)
+    return m.group(1).strip() if m else None
 
 
 def scrape_opencode(cookie, workspace_id=None):
@@ -313,6 +321,7 @@ def scrape_opencode(cookie, workspace_id=None):
     out = {
         "status": "unknown",
         "workspace_id": workspace_id,
+        "email": None,
         "balance_usd": None,
         "monthly_limit_usd": None,
         "monthly_usage_usd": None,
@@ -321,7 +330,7 @@ def scrape_opencode(cookie, workspace_id=None):
         "reload_trigger_usd": None,
         "subscription": None,
         "subscription_plan": None,
-        "lite": None,
+        "lite_subscription_id": None,
         "plan_label": None,
         "http_status": None,
         "error": None,
@@ -334,12 +343,26 @@ def scrape_opencode(cookie, workspace_id=None):
 
     headers = {"Cookie": cookie}
 
+    # Validar sesion y obtener email
+    st, _, sbody = _http_get_full(f"{OPENCODE_WEB}/auth/status", headers, timeout=20)
+    if st == 200:
+        sjson = _json_safe(sbody)
+        if isinstance(sjson, dict):
+            acc = sjson.get("account", {})
+            cur = sjson.get("current")
+            if cur and cur in acc:
+                out["email"] = acc[cur].get("email")
+    if st in (401, 403):
+        out["status"] = "expired"
+        out["error"] = "Sesion expirada (auth/status 401/403). Re-login requerido."
+        return out
+
     if not workspace_id:
         wsid = discover_workspace_id(cookie)
         out["workspace_id"] = wsid
         if not wsid:
             out["status"] = "no-workspace"
-            out["error"] = "No se pudo descubrir el workspace ID. Cookie invalida/expirada."
+            out["error"] = "No se pudo descubrir el workspace ID (probar /go). Cookie invalida/expirada."
             return out
         workspace_id = wsid
 
@@ -355,37 +378,36 @@ def scrape_opencode(cookie, workspace_id=None):
             out["error"] = "Sesion expirada (401/403). Re-login requerido."
         return out
 
-    # SolidStart serializa los resultados de query en el HTML; extraer campos.
-    balance = _extract_int(body, "balance")
-    monthly_limit = _extract_int(body, "monthlyLimit")
-    monthly_usage = _extract_int(body, "monthlyUsage")
-    reload_amount = _extract_int(body, "reloadAmount")
-    reload_trigger = _extract_int(body, "reloadTrigger")
+    # SolidStart serializa los resultados de query como JS (keys sin comillas).
+    balance = _extract_int(body, "balance")             # unidades (÷100M)
+    monthly_limit = _extract_int(body, "monthlyLimit")  # unidades
+    monthly_usage = _extract_int(body, "monthlyUsage")  # unidades
+    reload_amount = _extract_int(body, "reloadAmount")  # dolares directos
+    reload_trigger = _extract_int(body, "reloadTrigger")  # dolares directos
     reload_enabled = _extract_bool(body, "reload")
     subscription = _extract_bool(body, "subscription")
     subscription_plan = _extract_str(body, "subscriptionPlan")
-    lite = _extract_bool(body, "lite")
+    lite_sub_id = _extract_str(body, "liteSubscriptionID")
 
     out["balance_usd"] = _usd(balance)
     out["monthly_limit_usd"] = _usd(monthly_limit)
     out["monthly_usage_usd"] = _usd(monthly_usage)
-    out["reload_amount_usd"] = _usd(reload_amount)
-    out["reload_trigger_usd"] = _usd(reload_trigger)
+    out["reload_amount_usd"] = float(reload_amount) if reload_amount is not None else None
+    out["reload_trigger_usd"] = float(reload_trigger) if reload_trigger is not None else None
     out["reload_enabled"] = reload_enabled
     out["subscription"] = subscription
     out["subscription_plan"] = subscription_plan
-    out["lite"] = lite
+    out["lite_subscription_id"] = lite_sub_id
 
     # Etiqueta legible del plan
-    if subscription == "true":
+    if subscription == "true" or (subscription_plan and subscription_plan != "null"):
         out["plan_label"] = f"Black ({subscription_plan or 'plan'})"
-    elif lite == "true":
+    elif lite_sub_id and lite_sub_id != "null":
         out["plan_label"] = "Go (Lite)"
     else:
         out["plan_label"] = "Pay-as-you-go"
 
     if balance is None and monthly_limit is None and monthly_usage is None:
-        # Posible sesion expirada (pagina de login) o formato cambiado
         low = body.lower()
         if "sign in" in low or "/auth" in low or "log in" in low:
             out["status"] = "expired"
@@ -692,6 +714,7 @@ function renderOpenCode(d){
 }
 function renderScraped(d){
   let rows = '';
+  if(d.email) rows += row('Email', esc(d.email));
   rows += row('Plan', esc(d.plan_label||'—'));
   rows += row('Saldo', '<span class="big">'+money(d.balance_usd)+'</span>');
   rows += row('Uso del mes', money(d.monthly_usage_usd));
@@ -699,6 +722,7 @@ function renderScraped(d){
   let limPct = (d.monthly_usage_usd!=null && lim>0) ? Math.round(d.monthly_usage_usd/lim*100) : null;
   rows += row('Limite mensual', money(lim) + (limPct!=null? ' <span class="badge '+(limPct>=90?'err':limPct>=70?'warn':'ok')+'">'+limPct+'%</span>':''));
   rows += row('Auto-reload', d.reload_enabled==='true' ? 'ON ('+money(d.reload_amount_usd)+' cuando < '+money(d.reload_trigger_usd)+')' : (d.reload_enabled==='false'?'OFF':'—'));
+  if(d.lite_subscription_id) rows += row('Go subscription', esc(d.lite_subscription_id));
   rows += row('Workspace', esc(d.workspace_id||'—'));
   if(d.http_status) rows += row('HTTP billing', d.http_status);
   let err = d.error ? '<div class="err">'+esc(d.error)+'</div>' : '';
