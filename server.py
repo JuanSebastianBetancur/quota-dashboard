@@ -26,9 +26,11 @@ CONFIG_PATH = os.path.join(HERE, "config.json")
 SESSIONS_DIR = os.path.join(HERE, "sessions")
 CHATGPT_SESSIONS_DIR = os.path.join(HERE, "chatgpt_sessions")
 ZAI_SESSIONS_DIR = os.path.join(HERE, "zai_sessions")
+OLLAMA_SESSIONS_DIR = os.path.join(HERE, "ollama_sessions")
 os.makedirs(SESSIONS_DIR, exist_ok=True)
 os.makedirs(CHATGPT_SESSIONS_DIR, exist_ok=True)
 os.makedirs(ZAI_SESSIONS_DIR, exist_ok=True)
+os.makedirs(OLLAMA_SESSIONS_DIR, exist_ok=True)
 
 OPENAI_BASE = "https://api.openai.com/v1"
 OPENCODE_WEB = "https://opencode.ai"
@@ -47,6 +49,7 @@ _state = {
     "opencode_scraped": [],
     "chatgpt": [],
     "zai": [],
+    "ollama": [],
     "errors": [],
 }
 
@@ -1097,6 +1100,173 @@ def zai_refresh_all():
         _state["zai"] = results
 
 
+# ---------- ollama cloud (cookie scraping) ----------
+
+OLLAMA_WEB = "https://ollama.com"
+
+def _ollama_session_path(name):
+    safe = re.sub(r"[^A-Za-z0-9_.@-]", "_", name)
+    return os.path.join(OLLAMA_SESSIONS_DIR, f"{safe}.json")
+
+
+def ollama_list_sessions():
+    sessions = []
+    if not os.path.isdir(OLLAMA_SESSIONS_DIR):
+        return sessions
+    for fn in sorted(os.listdir(OLLAMA_SESSIONS_DIR)):
+        if not fn.endswith(".json"):
+            continue
+        try:
+            with open(os.path.join(OLLAMA_SESSIONS_DIR, fn), "r", encoding="utf-8") as f:
+                sessions.append(json.load(f))
+        except Exception:
+            pass
+    return sessions
+
+
+def ollama_save_session(name, data):
+    data["name"] = name
+    with open(_ollama_session_path(name), "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+    return data
+
+
+def ollama_delete_session(name):
+    p = _ollama_session_path(name)
+    if os.path.exists(p):
+        os.remove(p)
+        return True
+    return False
+
+
+def _parse_reset_to_seconds(text):
+    """Convierte 'Resets in X minutes/hours/days' a segundos."""
+    m = re.search(r"(\d+)\s*(minutes?|hours?|days?)", text or "")
+    if not m:
+        return None
+    n = int(m.group(1))
+    unit = m.group(2)
+    if unit.startswith("minute"):
+        return n * 60
+    if unit.startswith("hour"):
+        return n * 3600
+    if unit.startswith("day"):
+        return n * 86400
+    return None
+
+
+def ollama_scrape(cookie, workspace_id=None):
+    """Scrapea ollama.com/settings con la cookie __Secure-session."""
+    out = {
+        "status": "unknown",
+        "email": None,
+        "balance_usd": None,
+        "meters": None,
+        "auto_reload": None,
+        "error": None,
+        "raw_snippet": None,
+    }
+    if not cookie:
+        out["status"] = "missing-cookie"
+        out["error"] = "Cookie vacia."
+        return out
+
+    headers = {"Cookie": cookie}
+    st, final_url, body = _http_get_full(f"{OLLAMA_WEB}/settings", headers, timeout=25)
+    if st == 303 or (st == 200 and "signin" in (final_url or "").lower()):
+        out["status"] = "expired"
+        out["error"] = "Sesion expirada (redirige a signin). Re-login requerido."
+        return out
+    if st != 200:
+        out["status"] = "error"
+        out["error"] = f"/settings HTTP {st}."
+        return out
+
+    # Email
+    m = re.search(r">([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})<", body)
+    if m:
+        out["email"] = m.group(1)
+
+    # Balance
+    m = re.search(r"Balance remaining.{0,200}?\$([0-9.]+)", body, re.DOTALL)
+    if m:
+        out["balance_usd"] = float(m.group(1))
+    else:
+        m = re.search(r'class="text-2xl[^"]*">\$([0-9.]+)<', body)
+        if m:
+            out["balance_usd"] = float(m.group(1))
+
+    # Usage meters (data-usage-meter blocks con aria-label y Resets in)
+    meters = []
+    for block in re.finditer(r"data-usage-meter.*?(?=data-usage-meter|\Z)", body, re.DOTALL):
+        blk = block.group(0)
+        aria = re.search(r'aria-label="([^"]+)"', blk)
+        reset = re.search(r"Resets in ([0-9]+ (?:minutes?|hours?|days?))", blk)
+        if aria:
+            label = aria.group(1)  # ej: "Session usage 8.2% used"
+            pct_m = re.search(r"([\d.]+)%\s*used", label)
+            pct = float(pct_m.group(1)) if pct_m else None
+            name_m = re.match(r"(.+?)\s+\d", label)
+            name = name_m.group(1).strip() if name_m else label
+            meters.append({
+                "label": name,
+                "percentage": pct,
+                "reset_text": reset.group(1) if reset else None,
+                "reset_seconds": _parse_reset_to_seconds(reset.group(1) if reset else None),
+            })
+    out["meters"] = meters
+
+    # Auto-reload
+    if "Auto reload" in body:
+        m_add = re.search(r"Add \$([0-9.]+)", body)
+        m_trigger = re.search(r"hits \$([0-9.]+)", body)
+        out["auto_reload"] = {
+            "enabled": True,
+            "add_amount": float(m_add.group(1)) if m_add else None,
+            "trigger_amount": float(m_trigger.group(1)) if m_trigger else None,
+        }
+
+    if out["email"] is None and not meters:
+        low = body.lower()
+        if "signin" in low or "log in" in low:
+            out["status"] = "expired"
+            out["error"] = "Sesion expirada. Re-login requerido."
+        else:
+            out["status"] = "no-data"
+            out["error"] = "No se encontraron datos en el HTML."
+            out["raw_snippet"] = body[:3000]
+        return out
+
+    out["status"] = "ok"
+    return out
+
+
+def ollama_refresh_all():
+    """Re-scrapea todas las sesiones de ollama."""
+    sessions = ollama_list_sessions()
+    results = []
+
+    def worker(s):
+        try:
+            cookie = s.get("cookie", "")
+            scrape = ollama_scrape(cookie)
+            scrape["name"] = s.get("name", "?")
+            ollama_save_session(s["name"], {"cookie": cookie, **scrape})
+            results.append(scrape)
+        except Exception as e:
+            results.append({"name": s.get("name", "?"), "status": "error",
+                            "error": f"{type(e).__name__}: {e}"})
+
+    threads = [threading.Thread(target=worker, args=(s,)) for s in sessions]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=60)
+    results.sort(key=lambda x: x.get("name", ""))
+    with _state_lock:
+        _state["ollama"] = results
+
+
 # ---------- refresco ----------
 
 def refresh_all(config):
@@ -1135,6 +1305,12 @@ def refresh_all(config):
     except Exception as e:
         errors.append(f"zai: {e}")
 
+    # refresco de cuentas ollama cloud
+    try:
+        ollama_refresh_all()
+    except Exception as e:
+        errors.append(f"ollama: {e}")
+
     openai_results.sort(key=lambda x: x.get("name", ""))
 
     with _state_lock:
@@ -1163,6 +1339,7 @@ def background_scrape_loop(config):
             refresh_scraped()
             chatgpt_refresh_all()
             zai_refresh_all()
+            ollama_refresh_all()
         except Exception as e:
             with _state_lock:
                 _state["errors"].append(f"scrape_loop: {e}")
@@ -1305,6 +1482,27 @@ HTML_PAGE = """<!doctype html>
     </div>
   </section>
   <section>
+    <h2>Ollama Cloud</h2>
+    <div class="grid" id="ollama"><div class="empty">sin cuentas — anade una con el formulario de abajo</div></div>
+    <div class="add-form">
+      <label for="o-name">Nombre de la cuenta (ej: sebas44@gmail.com)</label>
+      <input id="o-name" type="text" placeholder="sebas44@gmail.com">
+      <label for="o-cookie">Cookie de sesion <code>__Secure-session</code> de ollama.com</label>
+      <textarea id="o-cookie" placeholder="__Secure-session=YWdlLWVuY3J5cH... (pega aqui el valor de la cookie)"></textarea>
+      <button onclick="ollamaAddSession()">Anadir cuenta</button>
+      <span id="o-msg" class="err" style="margin-left:10px"></span>
+      <details>
+        <summary>Como obtener la cookie (una sola vez)</summary>
+        <div class="hint">
+          1. Abre <a style="color:var(--accent)" href="https://ollama.com/settings" target="_blank">ollama.com/settings</a> (logueado con Google).<br>
+          2. Pulsa <b>F12</b> &rarr; pestana <b>Application</b> &rarr; <b>Cookies</b> &rarr; <b>https://ollama.com</b>.<br>
+          3. Busca la cookie <code>__Secure-session</code> y copia su <b>Value</b>.<br>
+          4. Pegalo arriba. El dashboard scrapeara /settings cada 5 min.
+        </div>
+      </details>
+    </div>
+  </section>
+  <section>
     <h2>OpenAI (claves admin)</h2>
     <div class="grid" id="openai"><div class="empty">cargando...</div></div>
   </section>
@@ -1401,6 +1599,9 @@ function render(data){
    let za = document.getElementById('zai');
    if(data.zai && data.zai.length) za.innerHTML = data.zai.map(renderZai).join('');
    else za.innerHTML = '<div class="empty">sin cuentas — anade una con el formulario de abajo</div>';
+   let ol = document.getElementById('ollama');
+   if(data.ollama && data.ollama.length) ol.innerHTML = data.ollama.map(renderOllama).join('');
+   else ol.innerHTML = '<div class="empty">sin cuentas — anade una con el formulario de abajo</div>';
    let er = document.getElementById('errors');
   if(data.errors && data.errors.length){
     er.innerHTML = '<h2>Errores</h2><ul>'+data.errors.map(e=>'<li class="err">'+esc(e)+'</li>').join('')+'</ul>';
@@ -1576,16 +1777,65 @@ function zaiDelete(name){
   fetch('/api/zai/session?name='+encodeURIComponent(name),{method:'DELETE'})
     .then(r=>r.json()).then(d=>{ if(d.ok) pollData(); }).catch(()=>{});
 }
+function renderOllama(d){
+  let rows = '';
+  if(d.email) rows += row('Email', esc(d.email));
+  rows += row('Saldo', '<span class="big">'+money(d.balance_usd)+'</span>');
+  if(d.meters){
+    rows += '<div style="margin:8px 0 2px;font-weight:600;color:var(--accent);font-size:12px">Uso</div>';
+    for(let m of d.meters){
+      rows += meterRow(m.label, {status:'ok', usagePercent:m.percentage, resetInSec:m.reset_seconds});
+    }
+  }
+  if(d.auto_reload){
+    let ar = d.auto_reload;
+    rows += row('Auto-reload', ar.enabled ? 'ON ($'+(ar.add_amount||'?')+' cuando < $'+(ar.trigger_amount||'?')+')' : 'OFF');
+  }
+  let err = d.error ? '<div class="err">'+esc(d.error)+'</div>' : '';
+  let actions = '<div style="margin-top:10px;display:flex;gap:8px">'
+    + '<button class="upd" data-type="ollama" data-name="'+esc(d.name)+'">Actualizar</button>'
+    + '<button class="del" data-type="ollama" data-name="'+esc(d.name)+'">Eliminar</button>'
+    + '</div>';
+  let display = d.email || d.name;
+  return '<div class="card"><div class="name">'+esc(display)+' '+badge(d.status)+'</div>'+rows+err+actions+'</div>';
+}
+function ollamaAddSession(){
+  let name = document.getElementById('o-name').value.trim();
+  let cookie = document.getElementById('o-cookie').value.trim();
+  let msg = document.getElementById('o-msg');
+  msg.textContent = '';
+  if(!name || !cookie){ msg.textContent = 'Falta nombre o cookie.'; return; }
+  msg.textContent = 'guardando y scrapeando...';
+  fetch('/api/ollama/session',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,cookie})})
+    .then(r=>r.json()).then(d=>{
+      if(d.ok){ document.getElementById('o-name').value=''; document.getElementById('o-cookie').value=''; msg.textContent='anadida.'; setTimeout(pollData,2000); }
+      else { msg.textContent = d.error || 'error'; }
+    }).catch(e=>{ msg.textContent = 'error: '+e; });
+}
+function ollamaRefresh(name, btn){
+  if(btn){ btn.disabled = true; btn.textContent = 'Actualizando...'; }
+  fetch('/api/ollama/refresh?name='+encodeURIComponent(name),{method:'POST'})
+    .then(r=>r.json()).then(d=>{
+      setTimeout(()=>{ pollData(); if(btn){ btn.disabled=false; btn.textContent='Actualizar'; } }, 3000);
+    }).catch(e=>{ if(btn){ btn.disabled=false; btn.textContent='Actualizar'; } });
+}
+function ollamaDelete(name){
+  if(!confirm('Eliminar la cuenta Ollama "'+name+'"?')) return;
+  fetch('/api/ollama/session?name='+encodeURIComponent(name),{method:'DELETE'})
+    .then(r=>r.json()).then(d=>{ if(d.ok) pollData(); }).catch(()=>{});
+}
 document.addEventListener('click', e=>{
   if(!e.target || !e.target.classList) return;
   let type = e.target.getAttribute('data-type');
   if(e.target.classList.contains('del')){
     if(type === 'chatgpt') chatgptDelete(e.target.getAttribute('data-name'));
     else if(type === 'zai') zaiDelete(e.target.getAttribute('data-name'));
+    else if(type === 'ollama') ollamaDelete(e.target.getAttribute('data-name'));
     else delSession(e.target.getAttribute('data-name'));
   } else if(e.target.classList.contains('upd')){
     if(type === 'chatgpt') chatgptRefresh(e.target.getAttribute('data-name'), e.target);
     else if(type === 'zai') zaiRefresh(e.target.getAttribute('data-name'), e.target);
+    else if(type === 'ollama') ollamaRefresh(e.target.getAttribute('data-name'), e.target);
     else updateSession(e.target.getAttribute('data-name'), e.target);
   }
 });
@@ -1640,6 +1890,7 @@ class Handler(BaseHTTPRequestHandler):
                 "scraped_accounts": [s.get("name") for s in list_sessions()],
                 "chatgpt_accounts": [s.get("name") for s in chatgpt_list_sessions()],
                 "zai_accounts": [s.get("name") for s in zai_list_sessions()],
+                "ollama_accounts": [s.get("name") for s in ollama_list_sessions()],
             }
             self._send(200, json.dumps(safe))
         elif parsed.path == "/api/sessions":
@@ -1653,6 +1904,9 @@ class Handler(BaseHTTPRequestHandler):
         elif parsed.path == "/api/zai/sessions":
             sessions = [{"name": s.get("name"), "email": s.get("email"),
                          "plan_label": s.get("plan_label")} for s in zai_list_sessions()]
+            self._send(200, json.dumps(sessions))
+        elif parsed.path == "/api/ollama/sessions":
+            sessions = [{"name": s.get("name"), "email": s.get("email")} for s in ollama_list_sessions()]
             self._send(200, json.dumps(sessions))
         elif parsed.path == "/api/chatgpt/login/status":
             q = parse_qs(parsed.query)
@@ -1764,6 +2018,43 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 threading.Thread(target=zai_refresh_all, daemon=True).start()
                 self._send(202, '{"ok":true}')
+        elif parsed.path == "/api/ollama/session":
+            data = self._read_json()
+            if not isinstance(data, dict) or not data.get("name") or not data.get("cookie"):
+                self._send(400, '{"error":"se requiere name y cookie"}')
+                return
+            name = data["name"].strip()
+            cookie = data["cookie"].strip()
+            ollama_save_session(name, {"cookie": cookie})
+            threading.Thread(target=ollama_refresh_all, daemon=True).start()
+            self._send(201, json.dumps({"ok": True, "name": name}))
+        elif parsed.path == "/api/ollama/refresh":
+            q = parse_qs(parsed.query)
+            if "name" in q:
+                name = q["name"][0]
+                sess = next((s for s in ollama_list_sessions() if s.get("name") == name), None)
+                if not sess:
+                    self._send(404, '{"error":"no encontrada"}')
+                    return
+                def _do_ollama():
+                    res = ollama_scrape(sess.get("cookie", ""))
+                    res["name"] = name
+                    ollama_save_session(name, {"cookie": sess.get("cookie", ""), **res})
+                    with _state_lock:
+                        current = list(_state.get("ollama", []))
+                        for i, s in enumerate(current):
+                            if s.get("name") == name:
+                                current[i] = res
+                                break
+                        else:
+                            current.append(res)
+                        current.sort(key=lambda x: x.get("name", ""))
+                        _state["ollama"] = current
+                threading.Thread(target=_do_ollama, daemon=True).start()
+                self._send(202, json.dumps({"ok": True, "name": name}))
+            else:
+                threading.Thread(target=ollama_refresh_all, daemon=True).start()
+                self._send(202, '{"ok":true}')
         else:
             self._send(404, '{"error":"not found"}')
 
@@ -1792,6 +2083,14 @@ class Handler(BaseHTTPRequestHandler):
             ok = zai_delete_session(name)
             if ok:
                 threading.Thread(target=zai_refresh_all, daemon=True).start()
+                self._send(200, json.dumps({"ok": True, "name": name}))
+            else:
+                self._send(404, json.dumps({"error": "no encontrada"}))
+        elif parsed.path == "/api/ollama/session" and "name" in q:
+            name = q["name"][0]
+            ok = ollama_delete_session(name)
+            if ok:
+                threading.Thread(target=ollama_refresh_all, daemon=True).start()
                 self._send(200, json.dumps({"ok": True, "name": name}))
             else:
                 self._send(404, json.dumps({"error": "no encontrada"}))

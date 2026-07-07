@@ -9,4 +9,5 @@ config.json
 sessions/
 chatgpt_sessions/
 zai_sessions/
+ollama_sessions/
 config.json

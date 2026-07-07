@@ -15,4 +15,6 @@ services:
       - ./chatgpt_sessions:/app/chatgpt_sessions
       # Persiste las sesiones de z.ai (platform tokens) entre reinicios.
       - ./zai_sessions:/app/zai_sessions
+      # Persiste las sesiones de ollama (cookies) entre reinicios.
+      - ./ollama_sessions:/app/ollama_sessions
     restart: unless-stopped
