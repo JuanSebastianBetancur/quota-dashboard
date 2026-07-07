@@ -1371,10 +1371,10 @@ def background_scrape_loop(config):
 # ---------- servidor HTTP ----------
 
 HTML_PAGE = """<!doctype html>
-<html lang="es">
+<html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Quota</title>
+<title>Quota Dashboard</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMDAgMTAwIj48cmVjdCB3aWR0aD0iMTAwIiBoZWlnaHQ9IjEwMCIgcng9IjE4IiBmaWxsPSIjMGQxMTE3Ii8+PGNpcmNsZSBjeD0iNTAiIGN5PSI1NiIgcj0iMzQiIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzMwMzYzZCIgc3Ryb2tlLXdpZHRoPSI3Ii8+PHBhdGggZD0iTTUwIDU2IEw1MCAyOCIgc3Ryb2tlPSIjNThhNmZmIiBzdHJva2Utd2lkdGg9IjciIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgdHJhbnNmb3JtPSJyb3RhdGUoLTUwIDUwIDU2KSIvPjxjaXJjbGUgY3g9IjUwIiBjeT0iNTYiIHI9IjUiIGZpbGw9IiM1OGE2ZmYiLz48L3N2Zz4=">
 <style>
   :root { --bg:#0d1117; --card:#161b22; --border:#30363d; --fg:#e6edf3; --muted:#8b949e; --ok:#3fb950; --warn:#d29922; --err:#f85149; --accent:#58a6ff; }
@@ -1427,9 +1427,9 @@ HTML_PAGE = """<!doctype html>
 </head>
 <body>
 <main>
-  <div class="grid" id="allcards"><div class="empty">cargando...</div></div>
+  <div class="grid" id="allcards"><div class="empty">Loading...</div></div>
   <div style="margin-top:16px;text-align:center">
-    <button id="add-btn" onclick="openModal()" style="background:var(--accent);color:#000;border:0;padding:10px 24px;border-radius:8px;cursor:pointer;font-weight:600;font-size:14px">+ Agregar cuenta</button>
+    <button id="add-btn" onclick="openModal()" style="background:var(--accent);color:#000;border:0;padding:10px 24px;border-radius:8px;cursor:pointer;font-weight:600;font-size:14px">+ Add account</button>
   </div>
   <section id="errors" style="margin-top:24px"></section>
 </main>
@@ -1437,15 +1437,15 @@ HTML_PAGE = """<!doctype html>
 <div id="modal-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:100;align-items:center;justify-content:center">
   <div id="modal" style="background:var(--card);border:1px solid var(--border);border-radius:12px;padding:24px;max-width:520px;width:90%;max-height:85vh;overflow-y:auto">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
-      <h2 style="margin:0;font-size:16px;color:var(--accent)">Agregar cuenta</h2>
+      <h2 style="margin:0;font-size:16px;color:var(--accent)">Add account</h2>
       <button onclick="closeModal()" style="background:none;border:0;color:var(--muted);font-size:20px;cursor:pointer">x</button>
     </div>
     <div id="modal-step1">
-      <p style="color:var(--muted);font-size:13px;margin-bottom:12px">Selecciona el proveedor:</p>
+      <p style="color:var(--muted);font-size:13px;margin-bottom:12px">Select provider:</p>
       <div id="provider-list" style="display:grid;gap:10px"></div>
     </div>
     <div id="modal-step2" style="display:none">
-      <button onclick="modalBack()" style="background:none;border:1px solid var(--border);color:var(--muted);padding:6px 12px;border-radius:6px;cursor:pointer;font-size:12px;margin-bottom:16px">&larr; Volver</button>
+      <button onclick="modalBack()" style="background:none;border:1px solid var(--border);color:var(--muted);padding:6px 12px;border-radius:6px;cursor:pointer;font-size:12px;margin-bottom:16px">&larr; Back</button>
       <div id="modal-form"></div>
     </div>
   </div>
@@ -1455,9 +1455,9 @@ HTML_PAGE = """<!doctype html>
 function esc(s){ return (s==null?'':String(s)).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 function badge(status){
   if(status==='ok') return '<span class="badge ok">OK</span>';
-  if(status==='invalid') return '<span class="badge err">INVALIDA</span>';
-  if(status==='missing-key') return '<span class="badge warn">SIN CLAVE</span>';
-  if(status==='expired') return '<span class="badge err">EXPIRADA</span>';
+  if(status==='invalid') return '<span class="badge err">INVALID</span>';
+  if(status==='missing-key') return '<span class="badge warn">NO KEY</span>';
+  if(status==='expired') return '<span class="badge err">EXPIRED</span>';
   if(status==='error') return '<span class="badge err">ERROR</span>';
   return '<span class="badge muted">'+esc(status||'?')+'</span>';
 }
@@ -1467,6 +1467,14 @@ function fmtSec(s){
   if(s<3600) return Math.round(s/60)+' min';
   if(s<86400) return (s/3600).toFixed(1)+' h';
   return (s/86400).toFixed(1)+' d';
+}
+function multiplierBadge(d, provider){
+  let multiplier = d.quota_multiplier || 1;
+  let multLabel = d.quota_multiplier_label || (provider === 'zai' ? 'x?' : 'x1');
+  let title = provider === 'zai'
+    ? 'Z.ai quota multiplier (UTC+8): peak 14:00-18:00 x3, off-peak x1 promo until end of Sep, then x2'
+    : 'Quota multiplier';
+  return '<span class="badge ' + (multiplier > 1 ? 'err' : 'muted') + '" title="'+esc(title)+'" style="margin-left:6px" data-multiplier="1" data-provider="'+esc(provider)+'">' + esc(multLabel) + '</span>';
 }
 function pctBadge(pct){
   if(pct==null) return null;
@@ -1482,10 +1490,11 @@ function row(k,v){
   if(v==null||v==='') v = '<span class="dash">--</span>';
   return '<div class="row"><span class="k">'+esc(k)+'</span><span class="v">'+v+'</span></div>';
 }
-function meterRow(label, pct, resetSec){
+function meterRow(label, pct, resetSec, extraHtml){
   let reset = fmtSec(resetSec);
   let val = pctBadge(pct) || '<span class="dash">--</span>';
   if(reset) val += ' <span class="note">reset '+reset+'</span>';
+  if(extraHtml) val += extraHtml;
   return row(label, val);
 }
 function autoReloadStr(ar){
@@ -1506,7 +1515,7 @@ function renderCard(d, provider){
   if(d.subscription && d.subscription.product_name) plan = d.subscription.product_name;
   let email = d.email || null;
 
-  // Uso: Rolling 5h / Semanal / Mensual
+  // Usage: Rolling 5h / Weekly / Monthly
   let u5h = null, u5hReset = null;
   let uSem = null, uSemReset = null;
   let uMen = null, uMenReset = null;
@@ -1535,27 +1544,27 @@ function renderCard(d, provider){
     }
   }
 
-  // z.ai no expone consumo mensual real; el límite TIME_LIMIT etiquetado "Mensual"
-  // corresponde a Web Search / Reader / Zread, no a la cuota general de la cuenta.
+  // z.ai does not expose real monthly usage; the TIME_LIMIT labeled "Mensual"
+  // corresponds to Web Search / Reader / Zread, not the account's general quota.
   if(provider === 'zai'){ uMen = null; uMenReset = null; }
 
-  // Detectar si alguna cuenta alcanzo el limite de 5h, semanal o mensual
+  // Detect if any rolling/weekly/monthly limit was hit
   let hitLimit = (u5h != null && u5h >= 100) || (uSem != null && uSem >= 100) || (uMen != null && uMen >= 100);
 
-  // Saldo
-  let saldo = null;
-  if(d.balance_usd!=null) saldo = money(d.balance_usd);
-  else if(d.credits && (d.credits.has_credits || d.credits.balance)) saldo = esc(d.credits.balance||'0');
+  // Balance
+  let balance = null;
+  if(d.balance_usd!=null) balance = money(d.balance_usd);
+  else if(d.credits && (d.credits.has_credits || d.credits.balance)) balance = esc(d.credits.balance||'0');
 
-  // Uso del mes (billing)
-  let usoMes = d.monthly_usage_usd!=null ? money(d.monthly_usage_usd) : null;
+  // Monthly usage (billing)
+  let monthUsage = d.monthly_usage_usd!=null ? money(d.monthly_usage_usd) : null;
 
-  // Limite mensual
-  let limMen = null;
+  // Monthly limit
+  let monthLimit = null;
   if(d.monthly_limit_usd!=null){
-    limMen = money(d.monthly_limit_usd);
+    monthLimit = money(d.monthly_limit_usd);
     if(d.monthly_usage_usd!=null && d.monthly_limit_usd>0){
-      limMen += ' '+pctBadge(Math.round(d.monthly_usage_usd/d.monthly_limit_usd*100));
+      monthLimit += ' '+pctBadge(Math.round(d.monthly_usage_usd/d.monthly_limit_usd*100));
     }
   }
 
@@ -1563,38 +1572,36 @@ function renderCard(d, provider){
   let ar = d.auto_reload || (d.reload_enabled && d.reload_enabled!=='null' ? {enabled:d.reload_enabled, add_amount:d.reload_amount_usd, trigger_amount:d.reload_trigger_usd} : null);
   let autoReload = autoReloadStr(ar);
 
-  // Suscripcion hasta
+  // Subscription until
   let subUntil = d.subscription_active_until ? fmtDate(d.subscription_active_until) : null;
   if(d.subscription && d.subscription.valid){
     let m = String(d.subscription.valid).match(/([0-9]{4}-[0-9]{2}-[0-9]{2})[ ]+.*?([0-9]{4}-[0-9]{2}-[0-9]{2})/);
     subUntil = m ? fmtDate(m[2]) : (subUntil||esc(d.subscription.valid));
   }
 
-  // Multiplicador de cuota (Z.ai: peak x3 / off-peak x1 promo / x2 normal). Para el resto x1 por defecto.
-  let multiplier = d.quota_multiplier || 1;
-  let multLabel = d.quota_multiplier_label || (provider === 'zai' ? 'x?' : 'x1');
-  let multHtml = '<span class="badge ' + (multiplier > 1 ? 'err' : 'muted') + '" title="Consumo de cuota multiplicado">' + esc(multLabel) + '</span>';
+  // Quota multiplier chip shown next to Rolling 5h and Weekly for Z.ai; x1 default for others.
+  let multChip = multiplierBadge(d, provider);
 
   let rows = '';
-  rows += row('Plan', (plan?esc(plan):null) + ' <span style="margin-left:6px">' + multHtml + '</span>');
+  rows += row('Plan', plan?esc(plan):null);
   rows += row('Email', email?esc(email):null);
-  rows += meterRow('Rolling 5h', u5h, u5hReset);
-  rows += meterRow('Semanal', uSem, uSemReset);
-  rows += meterRow('Mensual', uMen, uMenReset);
-  rows += row('Saldo', saldo!=null?'<span class="big">'+saldo+'</span>':null);
-  rows += row('Uso del mes', usoMes);
-  rows += row('Limite mensual', limMen);
+  rows += meterRow('Rolling 5h', u5h, u5hReset, multChip);
+  rows += meterRow('Weekly', uSem, uSemReset, multChip);
+  rows += meterRow('Monthly', uMen, uMenReset);
+  rows += row('Balance', balance!=null?'<span class="big">'+balance+'</span>':null);
+  rows += row('Month usage', monthUsage);
+  rows += row('Month limit', monthLimit);
   rows += row('Auto-reload', autoReload);
-  rows += row('Suscripcion hasta', subUntil);
+  rows += row('Subscribed until', subUntil);
 
   let err = d.error ? '<div class="err">'+esc(d.error)+'</div>' : '';
-  let raw = d.raw_snippet ? '<details><summary>HTML bruto (debug)</summary><div class="raw">'+esc(d.raw_snippet)+'</div></details>' : '';
+  let raw = d.raw_snippet ? '<details><summary>Raw HTML (debug)</summary><div class="raw">'+esc(d.raw_snippet)+'</div></details>' : '';
   let provTitle = PROVIDER_LABELS[provider] || provider;
   let display = d.email || d.name;
   let actions = '<div class="actions">'
-    + '<button class="del" data-type="'+provider+'" data-name="'+esc(d.name)+'" title="Eliminar">'+TRASH+'</button>'
+    + '<button class="del" data-type="'+provider+'" data-name="'+esc(d.name)+'" title="Delete">'+TRASH+'</button>'
     + '<span style="flex:1"></span>'
-    + '<button class="upd" data-type="'+provider+'" data-name="'+esc(d.name)+'">Actualizar</button>'
+    + '<button class="upd" data-type="'+provider+'" data-name="'+esc(d.name)+'">Update</button>'
     + '</div>';
   return '<div class="card'+(hitLimit?' card-limit':'')+'"><div class="prov-title">'+esc(provTitle)+'</div><div class="name">'+esc(display)+' '+badge(d.status)+'</div>'+rows+err+raw+actions+'</div>';
 }
@@ -1608,10 +1615,10 @@ function render(data){
   (data.openai||[]).forEach(d => cards.push(renderCard(d,'openai')));
   let grid = document.getElementById('allcards');
   if(cards.length) grid.innerHTML = cards.join('');
-  else grid.innerHTML = '<div class="empty">sin cuentas — pulsa "Agregar cuenta"</div>';
+  else grid.innerHTML = '<div class="empty">No accounts — click "Add account"</div>';
   let er = document.getElementById('errors');
   if(data.errors && data.errors.length){
-    er.innerHTML = '<h2>Errores</h2><ul>'+data.errors.map(e=>'<li class="err">'+esc(e)+'</li>').join('')+'</ul>';
+    er.innerHTML = '<h2>Errors</h2><ul>'+data.errors.map(e=>'<li class="err">'+esc(e)+'</li>').join('')+'</ul>';
   } else { er.innerHTML=''; }
 }
 function poll(){
@@ -1623,10 +1630,10 @@ function poll(){
 
 // --- Modal: agregar cuenta ---
 const PROVIDERS = [
-  {id:'opencode', label:'OpenCode (cookie auth)', field:'cookie', fieldLabel:'Cookie auth de opencode.ai', placeholder:'auth=Fe26.2...', hint:'DevTools &rarr; Application &rarr; Cookies &rarr; opencode.ai &rarr; copia el valor de <code>auth</code>'},
-  {id:'chatgpt', label:'ChatGPT / Codex (device-code)', field:'device', hint:'Activa "Device-code login" en ChatGPT Settings &rarr; Security. Luego pulsa el boton.'},
+  {id:'opencode', label:'OpenCode (cookie auth)', field:'cookie', fieldLabel:'opencode.ai auth cookie', placeholder:'auth=Fe26.2...', hint:'DevTools &rarr; Application &rarr; Cookies &rarr; opencode.ai &rarr; copy the <code>auth</code> value'},
+  {id:'chatgpt', label:'ChatGPT / Codex (device-code)', field:'device', hint:'Enable "Device-code login" in ChatGPT Settings &rarr; Security. Then click the button below.'},
   {id:'zai', label:'z.ai (platform token)', field:'token', fieldLabel:'Platform token (localStorage)', placeholder:'eyJhbGci...', hint:'F12 Console: localStorage.getItem(z-ai-open-platform-token-production)'},
-  {id:'ollama', label:'Ollama Cloud (cookie)', field:'cookie', fieldLabel:'Cookie __Secure-session', placeholder:'__Secure-session=YWdl...', hint:'DevTools &rarr; Application &rarr; Cookies &rarr; ollama.com &rarr; copia el valor de <code>__Secure-session</code>'},
+  {id:'ollama', label:'Ollama Cloud (cookie)', field:'cookie', fieldLabel:'Cookie __Secure-session', placeholder:'__Secure-session=YWdl...', hint:'DevTools &rarr; Application &rarr; Cookies &rarr; ollama.com &rarr; copy the <code>__Secure-session</code> value'},
 ];
 let _cgPollTimer = null;
 let _modalProvider = null;
@@ -1653,26 +1660,26 @@ function modalSelect(id){
   document.getElementById('modal-step1').style.display = 'none';
   document.getElementById('modal-step2').style.display = '';
   let form = document.getElementById('modal-form');
-  let nameInput = '<label style="display:block;color:var(--muted);font-size:12px;margin:8px 0 4px">Nombre</label><input id="m-name" type="text" placeholder="email@ejemplo.com" style="width:100%;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:6px;padding:8px;font:13px ui-monospace,monospace">';
+  let nameInput = '<label style="display:block;color:var(--muted);font-size:12px;margin:8px 0 4px">Name</label><input id="m-name" type="text" placeholder="email@example.com" style="width:100%;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:6px;padding:8px;font:13px ui-monospace,monospace">';
   let body = '<p style="color:var(--accent);font-weight:600;margin-bottom:8px">'+esc(p.label)+'</p>';
   if(p.field === 'device'){
     // ChatGPT device-code flow
     body += '<p style="color:var(--muted);font-size:12px;margin-bottom:10px">'+p.hint+'</p>';
-    body += '<button onclick="modalChatGPTLogin()" style="background:var(--accent);color:#000;border:0;padding:10px 20px;border-radius:8px;cursor:pointer;font-weight:600">Iniciar login</button>';
+    body += '<button onclick="modalChatGPTLogin()" style="background:var(--accent);color:#000;border:0;padding:10px 20px;border-radius:8px;cursor:pointer;font-weight:600">Start login</button>';
     body += '<span id="m-msg" class="err" style="margin-left:10px"></span>';
     body += '<div id="m-login-box" style="display:none;margin-top:12px;padding:12px;background:var(--bg);border-radius:6px;border:1px solid var(--border)">';
-    body += '<div style="font-size:12px;color:var(--muted);margin-bottom:4px">Abre esta URL e ingresa el codigo:</div>';
+    body += '<div style="font-size:12px;color:var(--muted);margin-bottom:4px">Open this URL and enter the code:</div>';
     body += '<div id="m-login-url" style="font-family:monospace;color:var(--accent);word-break:break-all;font-size:12px;margin-bottom:8px"></div>';
-    body += '<div style="font-size:12px;color:var(--muted);margin-bottom:4px">Codigo:</div>';
+    body += '<div style="font-size:12px;color:var(--muted);margin-bottom:4px">Code:</div>';
     body += '<div id="m-login-code" style="font-size:22px;font-weight:700;letter-spacing:2px;font-family:monospace;margin-bottom:8px"></div>';
-    body += '<div id="m-login-status" style="color:var(--warn);font-size:12px">esperando...</div>';
+    body += '<div id="m-login-status" style="color:var(--warn);font-size:12px">waiting...</div>';
     body += '</div>';
   } else {
     body += nameInput;
     body += '<label style="display:block;color:var(--muted);font-size:12px;margin:8px 0 4px">'+esc(p.fieldLabel||'')+'</label>';
     body += '<textarea id="m-credential" placeholder="'+esc(p.placeholder||'')+'" style="width:100%;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:6px;padding:8px;min-height:70px;font:12px ui-monospace,monospace;resize:vertical"></textarea>';
-    body += '<details style="margin-top:8px"><summary style="cursor:pointer;color:var(--muted);font-size:12px">Como obtenerlo</summary><div style="color:var(--muted);font-size:12px;margin-top:6px">'+p.hint+'</div></details>';
-    body += '<button onclick="modalSubmit()" style="margin-top:14px;background:var(--ok);color:#000;border:0;padding:10px 24px;border-radius:8px;cursor:pointer;font-weight:600">Anadir</button>';
+    body += '<details style="margin-top:8px"><summary style="cursor:pointer;color:var(--muted);font-size:12px">How to get it</summary><div style="color:var(--muted);font-size:12px;margin-top:6px">'+p.hint+'</div></details>';
+    body += '<button onclick="modalSubmit()" style="margin-top:14px;background:var(--ok);color:#000;border:0;padding:10px 24px;border-radius:8px;cursor:pointer;font-weight:600">Add</button>';
     body += '<span id="m-msg" class="err" style="margin-left:10px"></span>';
   }
   form.innerHTML = body;
@@ -1688,23 +1695,23 @@ function modalSubmit(){
   if(msg) msg.textContent = '';
   let body = {};
   if(p === 'opencode' || p === 'ollama'){
-    if(!name || !cred){ if(msg) msg.textContent='Falta nombre o valor.'; return; }
+    if(!name || !cred){ if(msg) msg.textContent='Missing name or value.'; return; }
     body = {name, cookie: cred};
   } else if(p === 'zai'){
-    if(!name || !cred){ if(msg) msg.textContent='Falta nombre o token.'; return; }
+    if(!name || !cred){ if(msg) msg.textContent='Missing name or token.'; return; }
     body = {name, token: cred};
   }
   let path = p==='opencode' ? '/api/session' : p==='ollama' ? '/api/ollama/session' : p==='zai' ? '/api/zai/session' : '';
-  if(msg) msg.textContent = 'guardando...';
+  if(msg) msg.textContent = 'saving...';
   fetch(path, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})
     .then(r=>r.json()).then(d=>{
-      if(d.ok){ if(msg) msg.textContent='anadida'; closeModal(); setTimeout(poll,2000); }
+      if(d.ok){ if(msg) msg.textContent='added'; closeModal(); setTimeout(poll,2000); }
       else { if(msg) msg.textContent = d.error||'error'; }
     }).catch(e=>{ if(msg) msg.textContent='error: '+e; });
 }
 function modalChatGPTLogin(){
   let msg = document.getElementById('m-msg');
-  msg.textContent = 'iniciando...';
+  msg.textContent = 'starting...';
   fetch('/api/chatgpt/login',{method:'POST'})
     .then(r=>r.json()).then(d=>{
       if(d.error){ msg.textContent=d.error; return; }
@@ -1716,10 +1723,10 @@ function modalChatGPTLogin(){
       let poll2 = () => {
         fetch('/api/chatgpt/login/poll?device_auth_id='+encodeURIComponent(d.device_auth_id),{method:'POST'})
           .then(r=>r.json()).then(x=>{
-            if(x.status==='success'){ statusEl.style.color='var(--ok)'; statusEl.textContent='anadida: '+(x.name||'ok'); setTimeout(()=>{closeModal(); poll();},1500); }
+            if(x.status==='success'){ statusEl.style.color='var(--ok)'; statusEl.textContent='added: '+(x.name||'ok'); setTimeout(()=>{closeModal(); poll();},1500); }
             else if(x.status==='pending'){ _cgPollTimer=setTimeout(poll2,(d.interval||5)*1000); }
             else { statusEl.style.color='var(--err)'; statusEl.textContent='error: '+(x.error||'?'); }
-          }).catch(e=>{ statusEl.style.color='var(--err)'; statusEl.textContent='red: '+e; });
+          }).catch(e=>{ statusEl.style.color='var(--err)'; statusEl.textContent='network: '+e; });
       };
       _cgPollTimer=setTimeout(poll2,(d.interval||5)*1000);
     }).catch(e=>{ msg.textContent='error: '+e; });
@@ -1729,13 +1736,13 @@ function modalChatGPTLogin(){
 const REFRESH_PATHS = {opencode:'/api/session/scrape', chatgpt:'/api/chatgpt/refresh', zai:'/api/zai/refresh', ollama:'/api/ollama/refresh'};
 const DELETE_PATHS = {opencode:'/api/session', chatgpt:'/api/chatgpt/session', zai:'/api/zai/session', ollama:'/api/ollama/session'};
 function refreshCard(type, name, btn){
-  if(btn){ btn.disabled=true; btn.textContent='Actualizando...'; }
+  if(btn){ btn.disabled=true; btn.textContent='Updating...'; }
   fetch(REFRESH_PATHS[type]+'?name='+encodeURIComponent(name),{method:'POST'})
-    .then(()=>setTimeout(()=>{ poll(); if(btn){btn.disabled=false; btn.textContent='Actualizar';} },3000))
-    .catch(()=>{ if(btn){btn.disabled=false; btn.textContent='Actualizar';} });
+    .then(()=>setTimeout(()=>{ poll(); if(btn){btn.disabled=false; btn.textContent='Update';} },3000))
+    .catch(()=>{ if(btn){btn.disabled=false; btn.textContent='Update';} });
 }
 function deleteCard(type, name){
-  if(!confirm('Eliminar "'+name+'"?')) return;
+  if(!confirm('Delete "'+name+'"?')) return;
   fetch(DELETE_PATHS[type]+'?name='+encodeURIComponent(name),{method:'DELETE'})
     .then(r=>r.json()).then(d=>{ if(d.ok) poll(); }).catch(()=>{});
 }
