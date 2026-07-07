@@ -1364,12 +1364,16 @@ HTML_PAGE = """<!doctype html>
   main { padding:24px; max-width:1200px; margin:0 auto; }
   section { margin-bottom:32px; }
   section h2 { font-size:15px; margin:0 0 12px; color:var(--accent); border-bottom:1px solid var(--border); padding-bottom:6px; }
-  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(360px,1fr)); gap:16px; }
-  .card { background:var(--card); border:1px solid var(--border); border-radius:8px; padding:14px; display:flex; flex-direction:column; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(360px,1fr)); gap:16px; align-items:stretch; }
+  .card { background:var(--card); border:1px solid var(--border); border-radius:8px; padding:14px; display:flex; flex-direction:column; height:100%; }
   .card .prov-title { font-size:11px; font-weight:700; color:var(--accent); text-transform:uppercase; letter-spacing:.5px; margin-bottom:2px; }
   .card .name { font-weight:600; font-size:15px; margin-bottom:6px; }
   .card .actions { margin-top:auto; padding-top:10px; display:flex; align-items:center; gap:8px; }
-  .card .del { background:transparent; color:var(--err); border:1px solid var(--border); width:32px; height:32px; border-radius:6px; cursor:pointer; font-size:15px; display:flex; align-items:center; justify-content:center; padding:0; flex-shrink:0; }
+  .card .upd, .card .del { height:32px; border-radius:6px; cursor:pointer; font:12px/1 ui-sans-serif,system-ui,sans-serif; display:flex; align-items:center; justify-content:center; flex-shrink:0; }
+  .card .upd { background:transparent; color:var(--accent); border:1px solid var(--border); padding:0 14px; }
+  .card .del { background:transparent; color:var(--err); border:1px solid var(--border); width:32px; padding:0; }
+  .card .upd:hover { background:rgba(88,166,255,.1); }
+  .card .del:hover { background:rgba(248,81,73,.1); }
   .badge { display:inline-block; padding:2px 8px; border-radius:10px; font-size:11px; font-weight:600; }
   .badge.ok { background:rgba(63,185,80,.15); color:var(--ok); }
   .badge.err { background:rgba(248,81,73,.15); color:var(--err); }
@@ -1379,7 +1383,8 @@ HTML_PAGE = """<!doctype html>
   .row:last-child { border-bottom:0; }
   .row .k { color:var(--muted); }
   .row .v { font-variant-numeric:tabular-nums; }
-  .big { font-size:22px; font-weight:700; font-variant-numeric:tabular-nums; }
+  .big { font-size:16px; font-weight:700; font-variant-numeric:tabular-nums; }
+  .dash { color:var(--muted); }
   .err { color:var(--err); font-size:12px; margin-top:6px; }
   .note { color:var(--muted); font-size:12px; margin-top:6px; }
   details { margin-top:8px; }
@@ -1398,9 +1403,6 @@ HTML_PAGE = """<!doctype html>
   .add-form button:hover { filter:brightness(1.1); }
   .add-form .hint { color:var(--muted); font-size:11px; margin-top:8px; }
   .add-form details { margin-top:8px; }
-  .card .upd { background:transparent; color:var(--accent); border:1px solid var(--border); padding:4px 14px; border-radius:6px; cursor:pointer; font-size:12px; }
-  .card .upd:hover { background:rgba(88,166,255,.1); }
-  .card .del:hover { background:rgba(248,81,73,.1); }
   .raw { white-space:pre-wrap; word-break:break-all; max-height:200px; overflow:auto; background:#0d1117; padding:8px; border-radius:6px; font:11px/1.4 ui-monospace,monospace; color:var(--muted); }
 </style>
 </head>
@@ -1463,12 +1465,12 @@ function fmtDate(s){
   catch(e){ return s; }
 }
 function row(k,v){
-  if(v==null||v==='') return '';
+  if(v==null||v==='') v = '<span class="dash">--</span>';
   return '<div class="row"><span class="k">'+esc(k)+'</span><span class="v">'+v+'</span></div>';
 }
 function meterRow(label, pct, resetSec){
   let reset = fmtSec(resetSec);
-  let val = pctBadge(pct) || '—';
+  let val = pctBadge(pct) || '<span class="dash">--</span>';
   if(reset) val += ' <span class="note">reset '+reset+'</span>';
   return row(label, val);
 }
@@ -1483,70 +1485,90 @@ function autoReloadStr(ar){
 
 // --- Render unificado de tarjetas ---
 const PROVIDER_LABELS = {opencode:'OpenCode Go', chatgpt:'ChatGPT / Codex', zai:'z.ai', ollama:'Ollama Cloud', openai:'OpenAI'};
+const TRASH = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><line x1="10" y1="11" x2="10" y2="17"></line><line x1="14" y1="11" x2="14" y2="17"></line></svg>';
 function renderCard(d, provider){
-  let rows = '';
-  // Plan
+  // --- campos estandarizados (siempre presentes; "--" si no aplica) ---
   let plan = d.plan_label || d.level || (d.is_admin ? 'Admin' : null);
   if(d.subscription && d.subscription.product_name) plan = d.subscription.product_name;
-  rows += row('Plan', plan?esc(plan):null);
-  // Email
-  rows += row('Email', d.email?esc(d.email):null);
-  // Uso (limites): 5h, Semanal, Mensual
-  let hasUsage = false;
-  // ChatGPT: rate_limits.primary/secondary
+  let email = d.email || null;
+
+  // Uso: Rolling 5h / Semanal / Mensual
+  let u5h = null, u5hReset = null;
+  let uSem = null, uSemReset = null;
+  let uMen = null, uMenReset = null;
   if(d.rate_limits){
-    let rl=d.rate_limits;
-    if(rl.primary){ rows += meterRow('Rolling 5h', rl.primary.used_percent, rl.primary.reset_after_seconds); hasUsage=true; }
-    if(rl.secondary){ rows += meterRow('Semanal', rl.secondary.used_percent, rl.secondary.reset_after_seconds); hasUsage=true; }
+    if(d.rate_limits.primary){ u5h=d.rate_limits.primary.used_percent; u5hReset=d.rate_limits.primary.reset_after_seconds; }
+    if(d.rate_limits.secondary){ uSem=d.rate_limits.secondary.used_percent; uSemReset=d.rate_limits.secondary.reset_after_seconds; }
   }
-  // OpenCode Go: go_rolling/go_weekly/go_monthly
-  if(d.go_rolling){ rows += meterRow('Rolling 5h', d.go_rolling.usagePercent, d.go_rolling.resetInSec); hasUsage=true; }
-  if(d.go_weekly){ rows += meterRow('Semanal', d.go_weekly.usagePercent, d.go_weekly.resetInSec); hasUsage=true; }
-  if(d.go_monthly){ rows += meterRow('Mensual', d.go_monthly.usagePercent, d.go_monthly.resetInSec); hasUsage=true; }
-  // z.ai: limits array
+  if(d.go_rolling){ u5h=d.go_rolling.usagePercent; u5hReset=d.go_rolling.resetInSec; }
+  if(d.go_weekly){ uSem=d.go_weekly.usagePercent; uSemReset=d.go_weekly.resetInSec; }
+  if(d.go_monthly){ uMen=d.go_monthly.usagePercent; uMenReset=d.go_monthly.resetInSec; }
   if(d.limits){
     for(let l of d.limits){
       let pct = l.percentage!=null?l.percentage:l.usage;
       let resetSec = l.next_reset_time?Math.round((l.next_reset_time-Date.now())/1000):null;
-      rows += meterRow(l.label, pct, resetSec); hasUsage=true;
+      if(l.label && l.label.toLowerCase().includes('5h')){ u5h=pct; u5hReset=resetSec; }
+      else if(l.label && l.label.toLowerCase().includes('sem')){ uSem=pct; uSemReset=resetSec; }
+      else if(l.label && l.label.toLowerCase().includes('men')){ uMen=pct; uMenReset=resetSec; }
     }
   }
-  // Ollama: meters array
   if(d.meters){
-    for(let m of d.meters){ rows += meterRow(m.label, m.percentage, m.reset_seconds); hasUsage=true; }
+    for(let m of d.meters){
+      let lbl=(m.label||'').toLowerCase();
+      if(lbl.includes('session')||lbl.includes('5h')){ u5h=m.percentage; u5hReset=m.reset_seconds; }
+      else if(lbl.includes('week')||lbl.includes('sem')){ uSem=m.percentage; uSemReset=m.reset_seconds; }
+      else if(lbl.includes('month')||lbl.includes('men')){ uMen=m.percentage; uMenReset=m.reset_seconds; }
+    }
   }
-  if(!hasUsage) rows += row('Uso', '<span class="note">Sin datos</span>');
+
   // Saldo
-  let bal = d.balance_usd;
-  if(bal!=null) rows += row('Saldo', '<span class="big">'+money(bal)+'</span>');
-  else if(d.credits && (d.credits.has_credits || d.credits.balance)) rows += row('Saldo', esc(d.credits.balance||'0'));
+  let saldo = null;
+  if(d.balance_usd!=null) saldo = money(d.balance_usd);
+  else if(d.credits && (d.credits.has_credits || d.credits.balance)) saldo = esc(d.credits.balance||'0');
+
   // Uso del mes (billing)
-  rows += row('Uso del mes', d.monthly_usage_usd!=null?money(d.monthly_usage_usd):null);
+  let usoMes = d.monthly_usage_usd!=null ? money(d.monthly_usage_usd) : null;
+
   // Limite mensual
-  let lim = d.monthly_limit_usd;
-  if(lim!=null){
-    let limPct = (d.monthly_usage_usd!=null && lim>0) ? Math.round(d.monthly_usage_usd/lim*100) : null;
-    rows += row('Limite mensual', money(lim)+(limPct!=null?' '+pctBadge(limPct):''));
+  let limMen = null;
+  if(d.monthly_limit_usd!=null){
+    limMen = money(d.monthly_limit_usd);
+    if(d.monthly_usage_usd!=null && d.monthly_limit_usd>0){
+      limMen += ' '+pctBadge(Math.round(d.monthly_usage_usd/d.monthly_limit_usd*100));
+    }
   }
+
   // Auto-reload
-  let ar = d.auto_reload || (d.reload_enabled ? {enabled:d.reload_enabled, add_amount:d.reload_amount_usd, trigger_amount:d.reload_trigger_usd} : null);
-  rows += row('Auto-reload', autoReloadStr(ar));
-  // Extras
-  if(d.subscription_active_until) rows += row('Suscripcion hasta', fmtDate(d.subscription_active_until));
-  if(d.subscription && d.subscription.valid) rows += row('Valido', esc(d.subscription.valid));
-  if(d.subscription && d.subscription.next_renew_time) rows += row('Prox. renovacion', esc(d.subscription.next_renew_time));
-  if(d.subscription && d.subscription.actual_price!=null) rows += row('Precio', '$'+d.subscription.actual_price+'/'+esc(d.subscription.billing_cycle||'mes'));
-  if(d.workspace_id) rows += row('Workspace', esc(d.workspace_id));
-  if(d.org) rows += row('Org', esc(d.org.title||d.org.id));
-  if(d.models_count!=null) rows += row('Modelos', d.models_count);
+  let ar = d.auto_reload || (d.reload_enabled && d.reload_enabled!=='null' ? {enabled:d.reload_enabled, add_amount:d.reload_amount_usd, trigger_amount:d.reload_trigger_usd} : null);
+  let autoReload = autoReloadStr(ar);
+
+  // Suscripcion hasta
+  let subUntil = d.subscription_active_until ? fmtDate(d.subscription_active_until) : null;
+  if(d.subscription && d.subscription.valid){
+    let m = String(d.subscription.valid).match(/([0-9]{4}-[0-9]{2}-[0-9]{2})[ ]+.*?([0-9]{4}-[0-9]{2}-[0-9]{2})/);
+    subUntil = m ? fmtDate(m[2]) : (subUntil||esc(d.subscription.valid));
+  }
+
+  let rows = '';
+  rows += row('Plan', plan?esc(plan):null);
+  rows += row('Email', email?esc(email):null);
+  rows += meterRow('Rolling 5h', u5h, u5hReset);
+  rows += meterRow('Semanal', uSem, uSemReset);
+  rows += meterRow('Mensual', uMen, uMenReset);
+  rows += row('Saldo', saldo!=null?'<span class="big">'+saldo+'</span>':null);
+  rows += row('Uso del mes', usoMes);
+  rows += row('Limite mensual', limMen);
+  rows += row('Auto-reload', autoReload);
+  rows += row('Suscripcion hasta', subUntil);
 
   let err = d.error ? '<div class="err">'+esc(d.error)+'</div>' : '';
   let raw = d.raw_snippet ? '<details><summary>HTML bruto (debug)</summary><div class="raw">'+esc(d.raw_snippet)+'</div></details>' : '';
   let provTitle = PROVIDER_LABELS[provider] || provider;
   let display = d.email || d.name;
   let actions = '<div class="actions">'
+    + '<button class="del" data-type="'+provider+'" data-name="'+esc(d.name)+'" title="Eliminar">'+TRASH+'</button>'
+    + '<span style="flex:1"></span>'
     + '<button class="upd" data-type="'+provider+'" data-name="'+esc(d.name)+'">Actualizar</button>'
-    + '<button class="del" data-type="'+provider+'" data-name="'+esc(d.name)+'" title="Eliminar">&times;</button>'
     + '</div>';
   return '<div class="card"><div class="prov-title">'+esc(provTitle)+'</div><div class="name">'+esc(display)+' '+badge(d.status)+'</div>'+rows+err+raw+actions+'</div>';
 }
