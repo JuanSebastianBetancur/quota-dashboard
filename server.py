@@ -19,7 +19,7 @@ import threading
 import urllib.request
 import urllib.error
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(HERE, "config.json")
@@ -41,6 +41,14 @@ OPENAI_OAUTH_REDIRECT = "https://auth.openai.com/deviceauth/callback"
 ZAI_API_BASE = "https://api.z.ai/api"
 # 1 USD = 100,000,000 unidades internas (segun formatBalance del repo)
 UNIT_DIVISOR = 100_000_000
+
+# Z.ai: peak/off-peak multipliers (UTC+8). Promocion limitada hasta fin de septiembre: off-peak x1 en vez de x2.
+ZAI_PEAK_START = 14  # 14:00 UTC+8
+ZAI_PEAK_END = 18    # 18:00 UTC+8 (14:00-18:00 inclusive? ventana 14:00 <= t < 18:00)
+ZAI_PEAK_MULTIPLIER = 3
+ZAI_OFFPEAK_MULTIPLIER = 2
+ZAI_PROMO_OFFPEAK_MULTIPLIER = 1
+ZAI_PROMO_UNTIL_UTC8 = datetime(2026, 9, 30, 23, 59, 59, tzinfo=timezone(timedelta(hours=8)))
 
 _state_lock = threading.Lock()
 _state = {
@@ -956,6 +964,19 @@ def _zai_api_get(path, token, timeout=20):
     return st, data
 
 
+def _zai_current_multiplier():
+    """Devuelve el multiplicador de cuota activo para Z.ai segun la hora UTC+8."""
+    now_utc8 = datetime.now(timezone(timedelta(hours=8)))
+    hour = now_utc8.hour
+    is_peak = ZAI_PEAK_START <= hour < ZAI_PEAK_END
+    if is_peak:
+        return ZAI_PEAK_MULTIPLIER
+    # Off-peak: promocion x1 hasta fin de septiembre; luego x2
+    if now_utc8 <= ZAI_PROMO_UNTIL_UTC8:
+        return ZAI_PROMO_OFFPEAK_MULTIPLIER
+    return ZAI_OFFPEAK_MULTIPLIER
+
+
 def _zai_session_path(name):
     safe = re.sub(r"[^A-Za-z0-9_.@-]", "_", name)
     return os.path.join(ZAI_SESSIONS_DIR, f"{safe}.json")
@@ -1071,6 +1092,8 @@ def zai_fetch_one(sess):
         sess["level"] = out["level"]
 
     out["status"] = "ok"
+    out["quota_multiplier"] = _zai_current_multiplier()
+    out["quota_multiplier_label"] = f"x{out['quota_multiplier']}"
     zai_save_session(name, sess)
     return out
 
@@ -1351,21 +1374,19 @@ HTML_PAGE = """<!doctype html>
 <html lang="es">
 <head>
 <meta charset="utf-8">
-<title>Cuotas - OpenAI + OpenCode</title>
+<title>Quota</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMDAgMTAwIj48cmVjdCB3aWR0aD0iMTAwIiBoZWlnaHQ9IjEwMCIgcng9IjE4IiBmaWxsPSIjMGQxMTE3Ii8+PGNpcmNsZSBjeD0iNTAiIGN5PSI1NiIgcj0iMzQiIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzMwMzYzZCIgc3Ryb2tlLXdpZHRoPSI3Ii8+PHBhdGggZD0iTTUwIDU2IEw1MCAyOCIgc3Ryb2tlPSIjNThhNmZmIiBzdHJva2Utd2lkdGg9IjciIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgdHJhbnNmb3JtPSJyb3RhdGUoLTUwIDUwIDU2KSIvPjxjaXJjbGUgY3g9IjUwIiBjeT0iNTYiIHI9IjUiIGZpbGw9IiM1OGE2ZmYiLz48L3N2Zz4=">
 <style>
   :root { --bg:#0d1117; --card:#161b22; --border:#30363d; --fg:#e6edf3; --muted:#8b949e; --ok:#3fb950; --warn:#d29922; --err:#f85149; --accent:#58a6ff; }
   * { box-sizing: border-box; }
   body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.5 ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial; }
-  header { padding:16px 24px; border-bottom:1px solid var(--border); display:flex; gap:16px; align-items:center; flex-wrap:wrap; }
-  header h1 { margin:0; font-size:18px; }
-  header .meta { color:var(--muted); font-size:12px; }
-  header button { margin-left:auto; background:var(--accent); color:#000; border:0; padding:8px 14px; border-radius:6px; cursor:pointer; font-weight:600; }
-  header button:hover { filter:brightness(1.1); }
   main { padding:24px; max-width:1200px; margin:0 auto; }
   section { margin-bottom:32px; }
   section h2 { font-size:15px; margin:0 0 12px; color:var(--accent); border-bottom:1px solid var(--border); padding-bottom:6px; }
   .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(360px,1fr)); gap:16px; align-items:stretch; }
   .card { background:var(--card); border:1px solid var(--border); border-radius:8px; padding:14px; display:flex; flex-direction:column; height:100%; }
+  .card-limit { background:rgba(248,81,73,.15); border-color:rgba(248,81,73,.5); }
+  .card-limit .prov-title { color:var(--err); }
   .card .prov-title { font-size:11px; font-weight:700; color:var(--accent); text-transform:uppercase; letter-spacing:.5px; margin-bottom:2px; }
   .card .name { font-weight:600; font-size:15px; margin-bottom:6px; }
   .card .actions { margin-top:auto; padding-top:10px; display:flex; align-items:center; gap:8px; }
@@ -1393,8 +1414,6 @@ HTML_PAGE = """<!doctype html>
   th,td { text-align:left; padding:4px 6px; border-bottom:1px solid var(--border); }
   th { color:var(--muted); font-weight:600; }
   .empty { color:var(--muted); font-style:italic; }
-  #loading { display:none; color:var(--muted); font-size:12px; }
-  #loading.show { display:inline; }
   .add-form { background:var(--card); border:1px solid var(--border); border-radius:8px; padding:14px; margin-top:16px; }
   .add-form label { display:block; color:var(--muted); font-size:12px; margin:8px 0 4px; }
   .add-form input, .add-form textarea { width:100%; background:#0d1117; color:var(--fg); border:1px solid var(--border); border-radius:6px; padding:8px; font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; }
@@ -1407,11 +1426,6 @@ HTML_PAGE = """<!doctype html>
 </style>
 </head>
 <body>
-<header>
-  <h1>Cuotas: OpenAI + OpenCode</h1>
-  <span class="meta" id="updated"></span>
-  <span id="loading" class="show">cargando...</span>
-</header>
 <main>
   <div class="grid" id="allcards"><div class="empty">cargando...</div></div>
   <div style="margin-top:16px;text-align:center">
@@ -1521,6 +1535,13 @@ function renderCard(d, provider){
     }
   }
 
+  // z.ai no expone consumo mensual real; el límite TIME_LIMIT etiquetado "Mensual"
+  // corresponde a Web Search / Reader / Zread, no a la cuota general de la cuenta.
+  if(provider === 'zai'){ uMen = null; uMenReset = null; }
+
+  // Detectar si alguna cuenta alcanzo el limite de 5h, semanal o mensual
+  let hitLimit = (u5h != null && u5h >= 100) || (uSem != null && uSem >= 100) || (uMen != null && uMen >= 100);
+
   // Saldo
   let saldo = null;
   if(d.balance_usd!=null) saldo = money(d.balance_usd);
@@ -1549,8 +1570,13 @@ function renderCard(d, provider){
     subUntil = m ? fmtDate(m[2]) : (subUntil||esc(d.subscription.valid));
   }
 
+  // Multiplicador de cuota (Z.ai: peak x3 / off-peak x1 promo / x2 normal). Para el resto x1 por defecto.
+  let multiplier = d.quota_multiplier || 1;
+  let multLabel = d.quota_multiplier_label || (provider === 'zai' ? 'x?' : 'x1');
+  let multHtml = '<span class="badge ' + (multiplier > 1 ? 'err' : 'muted') + '" title="Consumo de cuota multiplicado">' + esc(multLabel) + '</span>';
+
   let rows = '';
-  rows += row('Plan', plan?esc(plan):null);
+  rows += row('Plan', (plan?esc(plan):null) + ' <span style="margin-left:6px">' + multHtml + '</span>');
   rows += row('Email', email?esc(email):null);
   rows += meterRow('Rolling 5h', u5h, u5hReset);
   rows += meterRow('Semanal', uSem, uSemReset);
@@ -1570,11 +1596,10 @@ function renderCard(d, provider){
     + '<span style="flex:1"></span>'
     + '<button class="upd" data-type="'+provider+'" data-name="'+esc(d.name)+'">Actualizar</button>'
     + '</div>';
-  return '<div class="card"><div class="prov-title">'+esc(provTitle)+'</div><div class="name">'+esc(display)+' '+badge(d.status)+'</div>'+rows+err+raw+actions+'</div>';
+  return '<div class="card'+(hitLimit?' card-limit':'')+'"><div class="prov-title">'+esc(provTitle)+'</div><div class="name">'+esc(display)+' '+badge(d.status)+'</div>'+rows+err+raw+actions+'</div>';
 }
 
 function render(data){
-  document.getElementById('updated').textContent = data.updated_at ? 'Actualizado: '+data.updated_at+' UTC' : '';
   let cards = [];
   (data.opencode_scraped||[]).forEach(d => cards.push(renderCard(d,'opencode')));
   (data.chatgpt||[]).forEach(d => cards.push(renderCard(d,'chatgpt')));
@@ -1588,12 +1613,11 @@ function render(data){
   if(data.errors && data.errors.length){
     er.innerHTML = '<h2>Errores</h2><ul>'+data.errors.map(e=>'<li class="err">'+esc(e)+'</li>').join('')+'</ul>';
   } else { er.innerHTML=''; }
-  document.getElementById('loading').classList.remove('show');
 }
 function poll(){
   fetch('/api/data').then(r=>r.json()).then(d=>{
     if(d.updated_at){ render(d); }
-    else { document.getElementById('loading').classList.add('show'); setTimeout(poll,1500); }
+    else { setTimeout(poll,1500); }
   }).catch(()=>setTimeout(poll,2000));
 }
 
