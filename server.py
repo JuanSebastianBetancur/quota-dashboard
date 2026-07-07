@@ -1577,7 +1577,7 @@ function poll(){
 const PROVIDERS = [
   {id:'opencode', label:'OpenCode (cookie auth)', field:'cookie', fieldLabel:'Cookie auth de opencode.ai', placeholder:'auth=Fe26.2...', hint:'DevTools &rarr; Application &rarr; Cookies &rarr; opencode.ai &rarr; copia el valor de <code>auth</code>'},
   {id:'chatgpt', label:'ChatGPT / Codex (device-code)', field:'device', hint:'Activa "Device-code login" en ChatGPT Settings &rarr; Security. Luego pulsa el boton.'},
-  {id:'zai', label:'z.ai (platform token)', field:'token', fieldLabel:'Platform token (localStorage)', placeholder:'eyJhbGci...', hint:'F12 &rarr; Console &rarr; <code>localStorage.getItem(\'z-ai-open-platform-token-production\')</code>'},
+  {id:'zai', label:'z.ai (platform token)', field:'token', fieldLabel:'Platform token (localStorage)', placeholder:'eyJhbGci...', hint:'F12 Console: localStorage.getItem(z-ai-open-platform-token-production)'},
   {id:'ollama', label:'Ollama Cloud (cookie)', field:'cookie', fieldLabel:'Cookie __Secure-session', placeholder:'__Secure-session=YWdl...', hint:'DevTools &rarr; Application &rarr; Cookies &rarr; ollama.com &rarr; copia el valor de <code>__Secure-session</code>'},
 ];
 let _cgPollTimer = null;
@@ -1596,7 +1596,7 @@ function modalShowStep1(){
   document.getElementById('modal-step2').style.display = 'none';
   let list = document.getElementById('provider-list');
   list.innerHTML = PROVIDERS.map(p =>
-    '<button onclick="modalSelect(\''+p.id+'\')" style="background:var(--bg);border:1px solid var(--border);color:var(--fg);padding:14px;border-radius:8px;cursor:pointer;text-align:left;font-size:14px">'+esc(p.label)+'</button>'
+    '<button onclick=\"modalSelect(\\''+p.id+'\\')\" style=\"background:var(--bg);border:1px solid var(--border);color:var(--fg);padding:14px;border-radius:8px;cursor:pointer;text-align:left;font-size:14px\">'+esc(p.label)+'</button>'
   ).join('');
 }
 function modalSelect(id){
