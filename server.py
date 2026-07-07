@@ -1410,199 +1410,157 @@ HTML_PAGE = """<!doctype html>
   <span id="loading" class="show">cargando...</span>
 </header>
 <main>
-  <section>
-    <h2>OpenCode — saldo real (scraping via cookie)</h2>
-    <div class="grid" id="scraped"><div class="empty">sin cuentas scrapeadas — anade una con el formulario de abajo</div></div>
-    <div class="add-form">
-      <label for="s-name">Nombre de la cuenta (ej: juan@gmail.com)</label>
-      <input id="s-name" type="text" placeholder="juan@gmail.com">
-      <label for="s-cookie">Cookie de sesion <code>auth</code> de opencode.ai</label>
-      <textarea id="s-cookie" placeholder="auth=s%3A...  (pega aqui el valor de la cookie auth)"></textarea>
-      <button onclick="addSession()">Anadir cuenta</button>
-      <span id="s-msg" class="err" style="margin-left:10px"></span>
-      <details>
-        <summary>Como obtener la cookie (una sola vez)</summary>
-        <div class="hint">
-          1. Abre <a style="color:var(--accent)" href="https://opencode.ai/auth" target="_blank">https://opencode.ai/auth</a> en tu navegador.<br>
-          2. Inicia sesion con Google (o GitHub).<br>
-          3. Abre DevTools (F12) &rarr; pestana <b>Application</b> (o Storage) &rarr; <b>Cookies</b> &rarr; <b>https://opencode.ai</b>.<br>
-          4. Busca la cookie llamada <code>auth</code> y copia su <b>Value</b>.<br>
-          5. Pegalo en el formulario. Dura ~1 ano; el dashboard refrescara el saldo cada 5 min sin re-login.
-        </div>
-      </details>
-    </div>
-  </section>
-  <section>
-    <h2>ChatGPT Plus / Pro + Codex (device-code OAuth)</h2>
-    <div class="grid" id="chatgpt"><div class="empty">sin cuentas — inicia login abajo</div></div>
-    <div class="add-form" id="chatgpt-login-form">
-      <label>Iniciar sesion de una cuenta de ChatGPT</label>
-      <button onclick="chatgptStartLogin()">Iniciar login (device-code)</button>
-      <span id="cg-msg" class="err" style="margin-left:10px"></span>
-      <div id="cg-login-box" style="display:none;margin-top:12px;padding:12px;background:#0d1117;border-radius:6px;border:1px solid var(--border)">
-        <div style="margin-bottom:8px">Abre esta URL en tu navegador e ingresa el codigo:</div>
-        <div style="font-size:13px;color:var(--muted);margin-bottom:4px">URL:</div>
-        <div id="cg-login-url" style="font-family:monospace;color:var(--accent);word-break:break-all;margin-bottom:8px"></div>
-        <div style="font-size:13px;color:var(--muted);margin-bottom:4px">Codigo:</div>
-        <div id="cg-login-code" style="font-size:24px;font-weight:700;letter-spacing:2px;font-family:monospace;margin-bottom:8px"></div>
-        <div id="cg-login-status" style="color:var(--warn);font-size:12px">esperando autorizacion...</div>
-      </div>
-      <details>
-        <summary>Requisito previo (una sola vez por cuenta)</summary>
-        <div class="hint">
-          Antes de iniciar el login, activa <b>Device-code login</b> en ChatGPT:<br>
-          1. Abre <a style="color:var(--accent)" href="https://chatgpt.com/#settings/Account" target="_blank">chatgpt.com &rarr; Settings &rarr; Account</a>.<br>
-          2. Seccion <b>Security</b> &rarr; activa <b>"Allow device code login"</b>.<br>
-          3. Vuelve aqui y pulsa "Iniciar login".<br>
-          El refresh token dura indefinidamente (no requiere re-login).
-        </div>
-      </details>
-    </div>
-  </section>
-  <section>
-    <h2>z.ai (GLM Coding Plan)</h2>
-    <div class="grid" id="zai"><div class="empty">sin cuentas — anade una con el formulario de abajo</div></div>
-    <div class="add-form">
-      <label for="z-name">Nombre de la cuenta (ej: sebas44@gmail.com)</label>
-      <input id="z-name" type="text" placeholder="sebas44@gmail.com">
-      <label for="z-token">Platform token de z.ai <code>z-ai-open-platform-token-production</code></label>
-      <textarea id="z-token" placeholder="eyJhbGciOiJIUzUxMiJ9... (pega aqui el valor de localStorage)"></textarea>
-      <button onclick="zaiAddSession()">Anadir cuenta</button>
-      <span id="z-msg" class="err" style="margin-left:10px"></span>
-      <details>
-        <summary>Como obtener el token (una sola vez)</summary>
-        <div class="hint">
-          1. Abre <a style="color:var(--accent)" href="https://z.ai/manage-apikey/coding-plan/personal/usage" target="_blank">z.ai/manage-apikey/coding-plan/personal/usage</a> (logueado con Google).<br>
-          2. Pulsa <b>F12</b> &rarr; pestana <b>Console</b>.<br>
-          3. Pega: <code>localStorage.getItem('z-ai-open-platform-token-production')</code><br>
-          4. Copia el valor (sin las comillas) y pegalo arriba.<br>
-          El token <b>no expira</b>; el dashboard consultara el uso cada 5 min.
-        </div>
-      </details>
-    </div>
-  </section>
-  <section>
-    <h2>Ollama Cloud</h2>
-    <div class="grid" id="ollama"><div class="empty">sin cuentas — anade una con el formulario de abajo</div></div>
-    <div class="add-form">
-      <label for="o-name">Nombre de la cuenta (ej: sebas44@gmail.com)</label>
-      <input id="o-name" type="text" placeholder="sebas44@gmail.com">
-      <label for="o-cookie">Cookie de sesion <code>__Secure-session</code> de ollama.com</label>
-      <textarea id="o-cookie" placeholder="__Secure-session=YWdlLWVuY3J5cH... (pega aqui el valor de la cookie)"></textarea>
-      <button onclick="ollamaAddSession()">Anadir cuenta</button>
-      <span id="o-msg" class="err" style="margin-left:10px"></span>
-      <details>
-        <summary>Como obtener la cookie (una sola vez)</summary>
-        <div class="hint">
-          1. Abre <a style="color:var(--accent)" href="https://ollama.com/settings" target="_blank">ollama.com/settings</a> (logueado con Google).<br>
-          2. Pulsa <b>F12</b> &rarr; pestana <b>Application</b> &rarr; <b>Cookies</b> &rarr; <b>https://ollama.com</b>.<br>
-          3. Busca la cookie <code>__Secure-session</code> y copia su <b>Value</b>.<br>
-          4. Pegalo arriba. El dashboard scrapeara /settings cada 5 min.
-        </div>
-      </details>
-    </div>
-  </section>
-  <section>
-    <h2>OpenAI (claves admin)</h2>
-    <div class="grid" id="openai"><div class="empty">cargando...</div></div>
-  </section>
-  <section id="errors"></section>
+  <div class="grid" id="allcards"><div class="empty">cargando...</div></div>
+  <div style="margin-top:16px;text-align:center">
+    <button id="add-btn" onclick="openModal()" style="background:var(--accent);color:#000;border:0;padding:10px 24px;border-radius:8px;cursor:pointer;font-weight:600;font-size:14px">+ Agregar cuenta</button>
+  </div>
+  <section id="errors" style="margin-top:24px"></section>
 </main>
+
+<div id="modal-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:100;align-items:center;justify-content:center">
+  <div id="modal" style="background:var(--card);border:1px solid var(--border);border-radius:12px;padding:24px;max-width:520px;width:90%;max-height:85vh;overflow-y:auto">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+      <h2 style="margin:0;font-size:16px;color:var(--accent)">Agregar cuenta</h2>
+      <button onclick="closeModal()" style="background:none;border:0;color:var(--muted);font-size:20px;cursor:pointer">x</button>
+    </div>
+    <div id="modal-step1">
+      <p style="color:var(--muted);font-size:13px;margin-bottom:12px">Selecciona el proveedor:</p>
+      <div id="provider-list" style="display:grid;gap:10px"></div>
+    </div>
+    <div id="modal-step2" style="display:none">
+      <button onclick="modalBack()" style="background:none;border:1px solid var(--border);color:var(--muted);padding:6px 12px;border-radius:6px;cursor:pointer;font-size:12px;margin-bottom:16px">&larr; Volver</button>
+      <div id="modal-form"></div>
+    </div>
+  </div>
+</div>
+
 <script>
 function esc(s){ return (s==null?'':String(s)).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 function badge(status){
   if(status==='ok') return '<span class="badge ok">OK</span>';
   if(status==='invalid') return '<span class="badge err">INVALIDA</span>';
   if(status==='missing-key') return '<span class="badge warn">SIN CLAVE</span>';
+  if(status==='expired') return '<span class="badge err">EXPIRADA</span>';
   if(status==='error') return '<span class="badge err">ERROR</span>';
   return '<span class="badge muted">'+esc(status||'?')+'</span>';
 }
-function money(v){ if(v==null) return '—'; return '$'+Number(v).toFixed(2); }
-function renderOpenAI(d){
-  let rows = '';
-  rows += row('Plan', d.is_admin ? 'Admin (acceso completo)' : 'Estandar (sin costos)');
-  if(d.org) rows += row('Organizacion', esc(d.org.title||d.org.id) + ' ('+esc(d.org.id||'')+')');
-  rows += row('Gasto este mes', '<span class="big">'+money(d.this_month_usd)+'</span>');
-  rows += row('Modelos disponibles', d.models_count==null?'—':d.models_count);
-  rows += row('Rate limits', d.rate_limits.length+' modelos');
-  let breakdown = '';
-  if(d.this_month_breakdown && d.this_month_breakdown.length){
-    breakdown = '<details><summary>Desglose de costos (top 10)</summary><table><thead><tr><th>Item</th><th style="text-align:right">USD</th></tr></thead><tbody>'+
-      d.this_month_breakdown.map(r=>'<tr><td>'+esc(r.name)+'</td><td style="text-align:right">'+money(r.cost_usd)+'</td></tr>').join('')+'</tbody></table></details>';
-  }
-  let rl = '';
-  if(d.rate_limits && d.rate_limits.length){
-    rl = '<details><summary>Rate limits</summary><table><thead><tr><th>Modelo</th><th>req/min</th><th>tok/min</th></tr></thead><tbody>'+
-      d.rate_limits.map(r=>'<tr><td>'+esc(r.model)+'</td><td>'+(r.max_requests_per_minute||'—')+'</td><td>'+(r.max_tokens_per_minute||'—')+'</td></tr>').join('')+'</tbody></table></details>';
-  }
-  let err = d.error ? '<div class="err">'+esc(d.error)+'</div>' : '';
-  return '<div class="card"><div class="name">'+esc(d.name)+' '+badge(d.status)+'</div>'+rows+breakdown+rl+err+'</div>';
-}
+function money(v){ if(v==null) return null; return '$'+Number(v).toFixed(2); }
 function fmtSec(s){
-  if(s==null) return '—';
+  if(s==null||s<=0) return null;
   if(s<3600) return Math.round(s/60)+' min';
   if(s<86400) return (s/3600).toFixed(1)+' h';
   return (s/86400).toFixed(1)+' d';
 }
 function pctBadge(pct){
-  if(pct==null) return '—';
+  if(pct==null) return null;
   let cls = pct>=90?'err':pct>=70?'warn':'ok';
   return '<span class="badge '+cls+'">'+pct+'%</span>';
 }
-function meterRow(label, m){
-  if(!m) return row(label, '—');
-  let status = m.status==='ok' ? '<span class="badge ok">OK</span>' : '<span class="badge warn">'+esc(m.status||'?')+'</span>';
-  return row(label, pctBadge(m.usagePercent)+' reset en '+fmtSec(m.resetInSec));
+function fmtDate(s){
+  if(!s) return null;
+  try { let d=new Date(s); return d.toLocaleDateString(undefined,{year:'numeric',month:'short',day:'numeric'}); }
+  catch(e){ return s; }
 }
-function renderScraped(d){
-  let rows = '';
-  if(d.email) rows += row('Email', esc(d.email));
-  rows += row('Plan', esc(d.plan_label||'—'));
-  rows += row('Saldo', '<span class="big">'+money(d.balance_usd)+'</span>');
-  rows += row('Uso del mes (billing)', money(d.monthly_usage_usd));
-  let lim = d.monthly_limit_usd;
-  let limPct = (d.monthly_usage_usd!=null && lim>0) ? Math.round(d.monthly_usage_usd/lim*100) : null;
-  rows += row('Limite mensual', money(lim) + (limPct!=null? ' '+pctBadge(limPct):''));
-  rows += row('Auto-reload', d.reload_enabled==='true' ? 'ON ('+money(d.reload_amount_usd)+' cuando < '+money(d.reload_trigger_usd)+')' : (d.reload_enabled==='false'?'OFF':'—'));
-  if(d.lite_subscription_id) rows += row('Go subscription', esc(d.lite_subscription_id));
-  // Medidores de uso Go (5h / semana / mes)
-  if(d.go_rolling || d.go_weekly || d.go_monthly){
-    rows += '<div style="margin:8px 0 2px;font-weight:600;color:var(--accent);font-size:12px">Uso Go (limites)</div>';
-    rows += meterRow('Rolling 5h', d.go_rolling);
-    rows += meterRow('Semanal', d.go_weekly);
-    rows += meterRow('Mensual', d.go_monthly);
+function row(k,v){
+  if(v==null||v==='') return '';
+  return '<div class="row"><span class="k">'+esc(k)+'</span><span class="v">'+v+'</span></div>';
+}
+function meterRow(label, pct, resetSec){
+  let reset = fmtSec(resetSec);
+  let val = pctBadge(pct) || '—';
+  if(reset) val += ' <span class="note">reset '+reset+'</span>';
+  return row(label, val);
+}
+function autoReloadStr(ar){
+  if(!ar) return null;
+  if(ar.enabled==='true' || ar.enabled===true || ar.enabled===1){
+    return 'ON ('+money(ar.add_amount||ar.reload_amount_usd)+' < '+money(ar.trigger_amount||ar.reload_trigger_usd)+')';
   }
-  rows += row('Workspace', esc(d.workspace_id||'—'));
-  if(d.http_status_billing) rows += row('HTTP billing', d.http_status_billing);
-  if(d.http_status_go) rows += row('HTTP go', d.http_status_go);
-  let err = d.error ? '<div class="err">'+esc(d.error)+'</div>' : '';
-  let raw = '';
-  if(d.raw_snippet){ raw = '<details><summary>HTML bruto (debug)</summary><div class="raw">'+esc(d.raw_snippet)+'</div></details>'; }
-  let actions = '<div style="margin-top:10px;display:flex;gap:8px">'
-    + '<button class="upd" data-name="'+esc(d.name)+'">Actualizar</button>'
-    + '<button class="del" data-name="'+esc(d.name)+'">Eliminar</button>'
-    + '</div>';
-  return '<div class="card"><div class="name">'+esc(d.name)+' '+badge(d.status)+'</div>'+rows+err+raw+actions+'</div>';
+  if(ar.enabled==='false' || ar.enabled===false || ar.enabled===0) return 'OFF';
+  return null;
 }
-function row(k,v){ return '<div class="row"><span class="k">'+esc(k)+'</span><span class="v">'+v+'</span></div>'; }
+
+// --- Render unificado de tarjetas ---
+function renderCard(d, provider){
+  let rows = '';
+  // Plan
+  let plan = d.plan_label || d.level || (d.is_admin ? 'Admin' : null);
+  if(d.subscription && d.subscription.product_name) plan = d.subscription.product_name;
+  rows += row('Plan', plan?esc(plan):null);
+  // Email
+  rows += row('Email', d.email?esc(d.email):null);
+  // Uso (limites): 5h, Semanal, Mensual
+  let hasUsage = false;
+  // ChatGPT: rate_limits.primary/secondary
+  if(d.rate_limits){
+    let rl=d.rate_limits;
+    if(rl.primary){ rows += meterRow('Rolling 5h', rl.primary.used_percent, rl.primary.reset_after_seconds); hasUsage=true; }
+    if(rl.secondary){ rows += meterRow('Semanal', rl.secondary.used_percent, rl.secondary.reset_after_seconds); hasUsage=true; }
+  }
+  // OpenCode Go: go_rolling/go_weekly/go_monthly
+  if(d.go_rolling){ rows += meterRow('Rolling 5h', d.go_rolling.usagePercent, d.go_rolling.resetInSec); hasUsage=true; }
+  if(d.go_weekly){ rows += meterRow('Semanal', d.go_weekly.usagePercent, d.go_weekly.resetInSec); hasUsage=true; }
+  if(d.go_monthly){ rows += meterRow('Mensual', d.go_monthly.usagePercent, d.go_monthly.resetInSec); hasUsage=true; }
+  // z.ai: limits array
+  if(d.limits){
+    for(let l of d.limits){
+      let pct = l.percentage!=null?l.percentage:l.usage;
+      let resetSec = l.next_reset_time?Math.round((l.next_reset_time-Date.now())/1000):null;
+      rows += meterRow(l.label, pct, resetSec); hasUsage=true;
+    }
+  }
+  // Ollama: meters array
+  if(d.meters){
+    for(let m of d.meters){ rows += meterRow(m.label, m.percentage, m.reset_seconds); hasUsage=true; }
+  }
+  if(!hasUsage) rows += row('Uso', '<span class="note">Sin datos</span>');
+  // Saldo
+  let bal = d.balance_usd;
+  if(bal!=null) rows += row('Saldo', '<span class="big">'+money(bal)+'</span>');
+  else if(d.credits && (d.credits.has_credits || d.credits.balance)) rows += row('Saldo', esc(d.credits.balance||'0'));
+  // Uso del mes (billing)
+  rows += row('Uso del mes', d.monthly_usage_usd!=null?money(d.monthly_usage_usd):null);
+  // Limite mensual
+  let lim = d.monthly_limit_usd;
+  if(lim!=null){
+    let limPct = (d.monthly_usage_usd!=null && lim>0) ? Math.round(d.monthly_usage_usd/lim*100) : null;
+    rows += row('Limite mensual', money(lim)+(limPct!=null?' '+pctBadge(limPct):''));
+  }
+  // Auto-reload
+  let ar = d.auto_reload || (d.reload_enabled ? {enabled:d.reload_enabled, add_amount:d.reload_amount_usd, trigger_amount:d.reload_trigger_usd} : null);
+  rows += row('Auto-reload', autoReloadStr(ar));
+  // Extras
+  if(d.subscription_active_until) rows += row('Suscripcion hasta', fmtDate(d.subscription_active_until));
+  if(d.subscription && d.subscription.valid) rows += row('Valido', esc(d.subscription.valid));
+  if(d.subscription && d.subscription.next_renew_time) rows += row('Prox. renovacion', esc(d.subscription.next_renew_time));
+  if(d.subscription && d.subscription.actual_price!=null) rows += row('Precio', '$'+d.subscription.actual_price+'/'+esc(d.subscription.billing_cycle||'mes'));
+  if(d.workspace_id) rows += row('Workspace', esc(d.workspace_id));
+  if(d.org) rows += row('Org', esc(d.org.title||d.org.id));
+  if(d.models_count!=null) rows += row('Modelos', d.models_count);
+
+  let err = d.error ? '<div class="err">'+esc(d.error)+'</div>' : '';
+  let raw = d.raw_snippet ? '<details><summary>HTML bruto (debug)</summary><div class="raw">'+esc(d.raw_snippet)+'</div></details>' : '';
+  let actions = '<div style="margin-top:10px;display:flex;gap:8px">'
+    + '<button class="upd" data-type="'+provider+'" data-name="'+esc(d.name)+'">Actualizar</button>'
+    + '<button class="del" data-type="'+provider+'" data-name="'+esc(d.name)+'">Eliminar</button>'
+    + '</div>';
+  let display = d.email || d.name;
+  let provTag = '<span class="badge muted" style="margin-left:6px;font-size:10px">'+esc(provider)+'</span>';
+  return '<div class="card"><div class="name">'+esc(display)+' '+badge(d.status)+provTag+'</div>'+rows+err+raw+actions+'</div>';
+}
+
 function render(data){
   document.getElementById('updated').textContent = data.updated_at ? 'Actualizado: '+data.updated_at+' UTC' : '';
-  let oa = document.getElementById('openai');
-  if(data.openai && data.openai.length) oa.innerHTML = data.openai.map(renderOpenAI).join('');
-  else oa.innerHTML = '<div class="empty">Sin cuentas OpenAI en config.json</div>';
-  let sc = document.getElementById('scraped');
-  if(data.opencode_scraped && data.opencode_scraped.length) sc.innerHTML = data.opencode_scraped.map(renderScraped).join('');
-  else sc.innerHTML = '<div class="empty">sin cuentas scrapeadas — anade una con el formulario de abajo</div>';
-   let cg = document.getElementById('chatgpt');
-   if(data.chatgpt && data.chatgpt.length) cg.innerHTML = data.chatgpt.map(renderChatGPT).join('');
-   else cg.innerHTML = '<div class="empty">sin cuentas — inicia login con el formulario de abajo</div>';
-   let za = document.getElementById('zai');
-   if(data.zai && data.zai.length) za.innerHTML = data.zai.map(renderZai).join('');
-   else za.innerHTML = '<div class="empty">sin cuentas — anade una con el formulario de abajo</div>';
-   let ol = document.getElementById('ollama');
-   if(data.ollama && data.ollama.length) ol.innerHTML = data.ollama.map(renderOllama).join('');
-   else ol.innerHTML = '<div class="empty">sin cuentas — anade una con el formulario de abajo</div>';
-   let er = document.getElementById('errors');
+  let cards = [];
+  (data.opencode_scraped||[]).forEach(d => cards.push(renderCard(d,'opencode')));
+  (data.chatgpt||[]).forEach(d => cards.push(renderCard(d,'chatgpt')));
+  (data.zai||[]).forEach(d => cards.push(renderCard(d,'zai')));
+  (data.ollama||[]).forEach(d => cards.push(renderCard(d,'ollama')));
+  (data.openai||[]).forEach(d => cards.push(renderCard(d,'openai')));
+  let grid = document.getElementById('allcards');
+  if(cards.length) grid.innerHTML = cards.join('');
+  else grid.innerHTML = '<div class="empty">sin cuentas — pulsa "Agregar cuenta"</div>';
+  let er = document.getElementById('errors');
   if(data.errors && data.errors.length){
     er.innerHTML = '<h2>Errores</h2><ul>'+data.errors.map(e=>'<li class="err">'+esc(e)+'</li>').join('')+'</ul>';
   } else { er.innerHTML=''; }
@@ -1614,231 +1572,132 @@ function poll(){
     else { document.getElementById('loading').classList.add('show'); setTimeout(poll,1500); }
   }).catch(()=>setTimeout(poll,2000));
 }
-function addSession(){
-  let name = document.getElementById('s-name').value.trim();
-  let cookie = document.getElementById('s-cookie').value.trim();
-  let msg = document.getElementById('s-msg');
-  msg.textContent = '';
-  if(!name || !cookie){ msg.textContent = 'Falta nombre o cookie.'; return; }
-  msg.textContent = 'guardando y scrapeando...';
-  fetch('/api/session',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,cookie})})
-    .then(r=>r.json()).then(d=>{
-      if(d.ok){ document.getElementById('s-name').value=''; document.getElementById('s-cookie').value=''; msg.textContent='anadida. scrapeando...'; setTimeout(poll,2000); }
-      else { msg.textContent = d.error || 'error'; }
-    }).catch(e=>{ msg.textContent = 'error: '+e; });
+
+// --- Modal: agregar cuenta ---
+const PROVIDERS = [
+  {id:'opencode', label:'OpenCode (cookie auth)', field:'cookie', fieldLabel:'Cookie auth de opencode.ai', placeholder:'auth=Fe26.2...', hint:'DevTools &rarr; Application &rarr; Cookies &rarr; opencode.ai &rarr; copia el valor de <code>auth</code>'},
+  {id:'chatgpt', label:'ChatGPT / Codex (device-code)', field:'device', hint:'Activa "Device-code login" en ChatGPT Settings &rarr; Security. Luego pulsa el boton.'},
+  {id:'zai', label:'z.ai (platform token)', field:'token', fieldLabel:'Platform token (localStorage)', placeholder:'eyJhbGci...', hint:'F12 &rarr; Console &rarr; <code>localStorage.getItem(\'z-ai-open-platform-token-production\')</code>'},
+  {id:'ollama', label:'Ollama Cloud (cookie)', field:'cookie', fieldLabel:'Cookie __Secure-session', placeholder:'__Secure-session=YWdl...', hint:'DevTools &rarr; Application &rarr; Cookies &rarr; ollama.com &rarr; copia el valor de <code>__Secure-session</code>'},
+];
+let _cgPollTimer = null;
+let _modalProvider = null;
+
+function openModal(){
+  document.getElementById('modal-overlay').style.display = 'flex';
+  modalShowStep1();
 }
-function delSession(name){
-  if(!confirm('Eliminar la cuenta "'+name+'"?')) return;
-  fetch('/api/session?name='+encodeURIComponent(name),{method:'DELETE'})
-    .then(r=>r.json()).then(d=>{ if(d.ok) poll(); }).catch(()=>{});
+function closeModal(){
+  document.getElementById('modal-overlay').style.display = 'none';
+  if(_cgPollTimer){ clearTimeout(_cgPollTimer); _cgPollTimer=null; }
 }
-function updateSession(name, btn){
-  if(btn){ btn.disabled = true; btn.textContent = 'Actualizando...'; }
-  fetch('/api/session/scrape?name='+encodeURIComponent(name),{method:'POST'})
-    .then(r=>r.json()).then(d=>{
-      setTimeout(()=>{ poll(); if(btn){ btn.disabled=false; btn.textContent='Actualizar'; } }, 3000);
-    }).catch(e=>{
-      if(btn){ btn.disabled=false; btn.textContent='Actualizar'; }
-    });
+function modalShowStep1(){
+  document.getElementById('modal-step1').style.display = '';
+  document.getElementById('modal-step2').style.display = 'none';
+  let list = document.getElementById('provider-list');
+  list.innerHTML = PROVIDERS.map(p =>
+    '<button onclick="modalSelect(\''+p.id+'\')" style="background:var(--bg);border:1px solid var(--border);color:var(--fg);padding:14px;border-radius:8px;cursor:pointer;text-align:left;font-size:14px">'+esc(p.label)+'</button>'
+  ).join('');
 }
-function fmtDate(s){
-  if(!s) return '—';
-  try { let d=new Date(s); return d.toLocaleDateString(undefined,{year:'numeric',month:'short',day:'numeric'}); }
-  catch(e){ return esc(s); }
-}
-function renderChatGPT(d){
-  let rows = '';
-  if(d.email) rows += row('Email', esc(d.email));
-  rows += row('Plan', esc(d.plan_label||'—'));
-  if(d.subscription_active_until) rows += row('Suscripcion hasta', fmtDate(d.subscription_active_until));
-  if(d.rate_limits){
-    let rl = d.rate_limits;
-    if(rl.primary) rows += meterRow('Rolling 5h', {status:'ok', usagePercent:rl.primary.used_percent, resetInSec:rl.primary.reset_after_seconds});
-    if(rl.secondary) rows += meterRow('Semanal', {status:'ok', usagePercent:rl.secondary.used_percent, resetInSec:rl.secondary.reset_after_seconds});
-    if(rl.limit_reached) rows += row('Limite alcanzado', '<span class="badge err">SI</span>');
+function modalSelect(id){
+  _modalProvider = id;
+  let p = PROVIDERS.find(x => x.id === id);
+  document.getElementById('modal-step1').style.display = 'none';
+  document.getElementById('modal-step2').style.display = '';
+  let form = document.getElementById('modal-form');
+  let nameInput = '<label style="display:block;color:var(--muted);font-size:12px;margin:8px 0 4px">Nombre</label><input id="m-name" type="text" placeholder="email@ejemplo.com" style="width:100%;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:6px;padding:8px;font:13px ui-monospace,monospace">';
+  let body = '<p style="color:var(--accent);font-weight:600;margin-bottom:8px">'+esc(p.label)+'</p>';
+  if(p.field === 'device'){
+    // ChatGPT device-code flow
+    body += '<p style="color:var(--muted);font-size:12px;margin-bottom:10px">'+p.hint+'</p>';
+    body += '<button onclick="modalChatGPTLogin()" style="background:var(--accent);color:#000;border:0;padding:10px 20px;border-radius:8px;cursor:pointer;font-weight:600">Iniciar login</button>';
+    body += '<span id="m-msg" class="err" style="margin-left:10px"></span>';
+    body += '<div id="m-login-box" style="display:none;margin-top:12px;padding:12px;background:var(--bg);border-radius:6px;border:1px solid var(--border)">';
+    body += '<div style="font-size:12px;color:var(--muted);margin-bottom:4px">Abre esta URL e ingresa el codigo:</div>';
+    body += '<div id="m-login-url" style="font-family:monospace;color:var(--accent);word-break:break-all;font-size:12px;margin-bottom:8px"></div>';
+    body += '<div style="font-size:12px;color:var(--muted);margin-bottom:4px">Codigo:</div>';
+    body += '<div id="m-login-code" style="font-size:22px;font-weight:700;letter-spacing:2px;font-family:monospace;margin-bottom:8px"></div>';
+    body += '<div id="m-login-status" style="color:var(--warn);font-size:12px">esperando...</div>';
+    body += '</div>';
   } else {
-    rows += row('Uso Codex', '<span class="note">Sin datos aun</span>');
+    body += nameInput;
+    body += '<label style="display:block;color:var(--muted);font-size:12px;margin:8px 0 4px">'+esc(p.fieldLabel||'')+'</label>';
+    body += '<textarea id="m-credential" placeholder="'+esc(p.placeholder||'')+'" style="width:100%;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:6px;padding:8px;min-height:70px;font:12px ui-monospace,monospace;resize:vertical"></textarea>';
+    body += '<details style="margin-top:8px"><summary style="cursor:pointer;color:var(--muted);font-size:12px">Como obtenerlo</summary><div style="color:var(--muted);font-size:12px;margin-top:6px">'+p.hint+'</div></details>';
+    body += '<button onclick="modalSubmit()" style="margin-top:14px;background:var(--ok);color:#000;border:0;padding:10px 24px;border-radius:8px;cursor:pointer;font-weight:600">Anadir</button>';
+    body += '<span id="m-msg" class="err" style="margin-left:10px"></span>';
   }
-  if(d.credits){
-    let c = d.credits;
-    if(c.unlimited) rows += row('Credits', '<span class="badge ok">Ilimitados</span>');
-    else if(c.has_credits) rows += row('Credits', esc(c.balance||'0'));
-    let lm = c.approx_local_messages, cm = c.approx_cloud_messages;
-    if(lm) rows += row('Mensajes approx (local)', lm[0]+'–'+lm[1]);
-    if(cm) rows += row('Mensajes approx (cloud)', cm[0]+'–'+cm[1]);
-  }
-  let err = d.error ? '<div class="err">'+esc(d.error)+'</div>' : '';
-  let actions = '<div style="margin-top:10px;display:flex;gap:8px">'
-    + '<button class="upd" data-type="chatgpt" data-name="'+esc(d.name)+'">Actualizar</button>'
-    + '<button class="del" data-type="chatgpt" data-name="'+esc(d.name)+'">Eliminar</button>'
-    + '</div>';
-  let display = d.email || d.name;
-  return '<div class="card"><div class="name">'+esc(display)+' '+badge(d.status)+'</div>'+rows+err+actions+'</div>';
+  form.innerHTML = body;
 }
-function chatgptStartLogin(){
-  let msg = document.getElementById('cg-msg');
+function modalBack(){ modalShowStep1(); }
+function modalSubmit(){
+  let p = _modalProvider;
+  let name = (document.getElementById('m-name')||{}).value;
+  name = name ? name.trim() : '';
+  let cred = (document.getElementById('m-credential')||{}).value;
+  cred = cred ? cred.trim() : '';
+  let msg = document.getElementById('m-msg');
+  if(msg) msg.textContent = '';
+  let body = {};
+  if(p === 'opencode' || p === 'ollama'){
+    if(!name || !cred){ if(msg) msg.textContent='Falta nombre o valor.'; return; }
+    body = {name, cookie: cred};
+  } else if(p === 'zai'){
+    if(!name || !cred){ if(msg) msg.textContent='Falta nombre o token.'; return; }
+    body = {name, token: cred};
+  }
+  let path = p==='opencode' ? '/api/session' : p==='ollama' ? '/api/ollama/session' : p==='zai' ? '/api/zai/session' : '';
+  if(msg) msg.textContent = 'guardando...';
+  fetch(path, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})
+    .then(r=>r.json()).then(d=>{
+      if(d.ok){ if(msg) msg.textContent='anadida'; closeModal(); setTimeout(poll,2000); }
+      else { if(msg) msg.textContent = d.error||'error'; }
+    }).catch(e=>{ if(msg) msg.textContent='error: '+e; });
+}
+function modalChatGPTLogin(){
+  let msg = document.getElementById('m-msg');
   msg.textContent = 'iniciando...';
   fetch('/api/chatgpt/login',{method:'POST'})
     .then(r=>r.json()).then(d=>{
-      if(d.error){ msg.textContent = d.error; return; }
-      msg.textContent = '';
-      document.getElementById('cg-login-box').style.display = 'block';
-      document.getElementById('cg-login-url').textContent = d.url;
-      document.getElementById('cg-login-code').textContent = d.user_code;
-      document.getElementById('cg-login-status').textContent = 'esperando autorizacion...';
-      chatgptPollLogin(d.device_auth_id, d.interval||5);
-    }).catch(e=>{ msg.textContent = 'error: '+e; });
+      if(d.error){ msg.textContent=d.error; return; }
+      msg.textContent='';
+      document.getElementById('m-login-box').style.display='';
+      document.getElementById('m-login-url').textContent=d.url;
+      document.getElementById('m-login-code').textContent=d.user_code;
+      let statusEl=document.getElementById('m-login-status');
+      let poll2 = () => {
+        fetch('/api/chatgpt/login/poll?device_auth_id='+encodeURIComponent(d.device_auth_id),{method:'POST'})
+          .then(r=>r.json()).then(x=>{
+            if(x.status==='success'){ statusEl.style.color='var(--ok)'; statusEl.textContent='anadida: '+(x.name||'ok'); setTimeout(()=>{closeModal(); poll();},1500); }
+            else if(x.status==='pending'){ _cgPollTimer=setTimeout(poll2,(d.interval||5)*1000); }
+            else { statusEl.style.color='var(--err)'; statusEl.textContent='error: '+(x.error||'?'); }
+          }).catch(e=>{ statusEl.style.color='var(--err)'; statusEl.textContent='red: '+e; });
+      };
+      _cgPollTimer=setTimeout(poll2,(d.interval||5)*1000);
+    }).catch(e=>{ msg.textContent='error: '+e; });
 }
-let _cgPollTimer = null;
-function chatgptPollLogin(did, interval){
-  if(_cgPollTimer) clearTimeout(_cgPollTimer);
-  let statusEl = document.getElementById('cg-login-status');
-  let poll = () => {
-    fetch('/api/chatgpt/login/poll?device_auth_id='+encodeURIComponent(did),{method:'POST'})
-      .then(r=>r.json()).then(d=>{
-        if(d.status === 'success'){
-          statusEl.style.color = 'var(--ok)';
-          statusEl.textContent = 'Cuenta anadida: '+(d.name||'ok');
-          setTimeout(()=>{ pollData(); }, 1500);
-        } else if(d.status === 'pending'){
-          _cgPollTimer = setTimeout(poll, (interval||5)*1000);
-        } else {
-          statusEl.style.color = 'var(--err)';
-          statusEl.textContent = 'error: '+(d.error||'desconocido');
-        }
-      }).catch(e=>{
-        statusEl.style.color = 'var(--err)';
-        statusEl.textContent = 'error de red: '+e;
-      });
-  };
-  _cgPollTimer = setTimeout(poll, (interval||5)*1000);
+
+// --- Acciones por card (Actualizar / Eliminar) ---
+const REFRESH_PATHS = {opencode:'/api/session/scrape', chatgpt:'/api/chatgpt/refresh', zai:'/api/zai/refresh', ollama:'/api/ollama/refresh'};
+const DELETE_PATHS = {opencode:'/api/session', chatgpt:'/api/chatgpt/session', zai:'/api/zai/session', ollama:'/api/ollama/session'};
+function refreshCard(type, name, btn){
+  if(btn){ btn.disabled=true; btn.textContent='Actualizando...'; }
+  fetch(REFRESH_PATHS[type]+'?name='+encodeURIComponent(name),{method:'POST'})
+    .then(()=>setTimeout(()=>{ poll(); if(btn){btn.disabled=false; btn.textContent='Actualizar';} },3000))
+    .catch(()=>{ if(btn){btn.disabled=false; btn.textContent='Actualizar';} });
 }
-function chatgptRefresh(name, btn){
-  if(btn){ btn.disabled = true; btn.textContent = 'Actualizando...'; }
-  fetch('/api/chatgpt/refresh?name='+encodeURIComponent(name),{method:'POST'})
-    .then(r=>r.json()).then(d=>{
-      setTimeout(()=>{ pollData(); if(btn){ btn.disabled=false; btn.textContent='Actualizar'; } }, 3000);
-    }).catch(e=>{ if(btn){ btn.disabled=false; btn.textContent='Actualizar'; } });
-}
-function chatgptDelete(name){
-  if(!confirm('Eliminar la cuenta ChatGPT "'+name+'"?')) return;
-  fetch('/api/chatgpt/session?name='+encodeURIComponent(name),{method:'DELETE'})
-    .then(r=>r.json()).then(d=>{ if(d.ok) pollData(); }).catch(()=>{});
-}
-function pollData(){ poll(); }
-function renderZai(d){
-  let rows = '';
-  if(d.email) rows += row('Email', esc(d.email));
-  rows += row('Plan', esc(d.plan_label||d.level||'—'));
-  if(d.subscription){
-    let s = d.subscription;
-    if(s.valid) rows += row('Valido', esc(s.valid));
-    if(s.next_renew_time) rows += row('Prox. renovacion', esc(s.next_renew_time));
-    if(s.actual_price!=null) rows += row('Precio', '$'+s.actual_price+'/'+esc(s.billing_cycle||'mes'));
-    rows += row('Auto-renovar', s.auto_renew===1?'SI':'NO');
-  }
-  if(d.limits){
-    rows += '<div style="margin:8px 0 2px;font-weight:600;color:var(--accent);font-size:12px">Cuotas</div>';
-    for(let l of d.limits){
-      let pct = l.percentage!=null?l.percentage:l.usage;
-      rows += meterRow(l.label, {status:'ok', usagePercent:pct, resetInSec:l.next_reset_time?Math.round((l.next_reset_time-Date.now())/1000):null});
-    }
-  }
-  let err = d.error ? '<div class="err">'+esc(d.error)+'</div>' : '';
-  let actions = '<div style="margin-top:10px;display:flex;gap:8px">'
-    + '<button class="upd" data-type="zai" data-name="'+esc(d.name)+'">Actualizar</button>'
-    + '<button class="del" data-type="zai" data-name="'+esc(d.name)+'">Eliminar</button>'
-    + '</div>';
-  let display = d.email || d.name;
-  return '<div class="card"><div class="name">'+esc(display)+' '+badge(d.status)+'</div>'+rows+err+actions+'</div>';
-}
-function zaiAddSession(){
-  let name = document.getElementById('z-name').value.trim();
-  let token = document.getElementById('z-token').value.trim();
-  let msg = document.getElementById('z-msg');
-  msg.textContent = '';
-  if(!name || !token){ msg.textContent = 'Falta nombre o token.'; return; }
-  msg.textContent = 'guardando y consultando...';
-  fetch('/api/zai/session',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,token})})
-    .then(r=>r.json()).then(d=>{
-      if(d.ok){ document.getElementById('z-name').value=''; document.getElementById('z-token').value=''; msg.textContent='anadida.'; setTimeout(pollData,2000); }
-      else { msg.textContent = d.error || 'error'; }
-    }).catch(e=>{ msg.textContent = 'error: '+e; });
-}
-function zaiRefresh(name, btn){
-  if(btn){ btn.disabled = true; btn.textContent = 'Actualizando...'; }
-  fetch('/api/zai/refresh?name='+encodeURIComponent(name),{method:'POST'})
-    .then(r=>r.json()).then(d=>{
-      setTimeout(()=>{ pollData(); if(btn){ btn.disabled=false; btn.textContent='Actualizar'; } }, 3000);
-    }).catch(e=>{ if(btn){ btn.disabled=false; btn.textContent='Actualizar'; } });
-}
-function zaiDelete(name){
-  if(!confirm('Eliminar la cuenta z.ai "'+name+'"?')) return;
-  fetch('/api/zai/session?name='+encodeURIComponent(name),{method:'DELETE'})
-    .then(r=>r.json()).then(d=>{ if(d.ok) pollData(); }).catch(()=>{});
-}
-function renderOllama(d){
-  let rows = '';
-  if(d.email) rows += row('Email', esc(d.email));
-  rows += row('Saldo', '<span class="big">'+money(d.balance_usd)+'</span>');
-  if(d.meters){
-    rows += '<div style="margin:8px 0 2px;font-weight:600;color:var(--accent);font-size:12px">Uso</div>';
-    for(let m of d.meters){
-      rows += meterRow(m.label, {status:'ok', usagePercent:m.percentage, resetInSec:m.reset_seconds});
-    }
-  }
-  if(d.auto_reload){
-    let ar = d.auto_reload;
-    rows += row('Auto-reload', ar.enabled ? 'ON ($'+(ar.add_amount||'?')+' cuando < $'+(ar.trigger_amount||'?')+')' : 'OFF');
-  }
-  let err = d.error ? '<div class="err">'+esc(d.error)+'</div>' : '';
-  let actions = '<div style="margin-top:10px;display:flex;gap:8px">'
-    + '<button class="upd" data-type="ollama" data-name="'+esc(d.name)+'">Actualizar</button>'
-    + '<button class="del" data-type="ollama" data-name="'+esc(d.name)+'">Eliminar</button>'
-    + '</div>';
-  let display = d.email || d.name;
-  return '<div class="card"><div class="name">'+esc(display)+' '+badge(d.status)+'</div>'+rows+err+actions+'</div>';
-}
-function ollamaAddSession(){
-  let name = document.getElementById('o-name').value.trim();
-  let cookie = document.getElementById('o-cookie').value.trim();
-  let msg = document.getElementById('o-msg');
-  msg.textContent = '';
-  if(!name || !cookie){ msg.textContent = 'Falta nombre o cookie.'; return; }
-  msg.textContent = 'guardando y scrapeando...';
-  fetch('/api/ollama/session',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,cookie})})
-    .then(r=>r.json()).then(d=>{
-      if(d.ok){ document.getElementById('o-name').value=''; document.getElementById('o-cookie').value=''; msg.textContent='anadida.'; setTimeout(pollData,2000); }
-      else { msg.textContent = d.error || 'error'; }
-    }).catch(e=>{ msg.textContent = 'error: '+e; });
-}
-function ollamaRefresh(name, btn){
-  if(btn){ btn.disabled = true; btn.textContent = 'Actualizando...'; }
-  fetch('/api/ollama/refresh?name='+encodeURIComponent(name),{method:'POST'})
-    .then(r=>r.json()).then(d=>{
-      setTimeout(()=>{ pollData(); if(btn){ btn.disabled=false; btn.textContent='Actualizar'; } }, 3000);
-    }).catch(e=>{ if(btn){ btn.disabled=false; btn.textContent='Actualizar'; } });
-}
-function ollamaDelete(name){
-  if(!confirm('Eliminar la cuenta Ollama "'+name+'"?')) return;
-  fetch('/api/ollama/session?name='+encodeURIComponent(name),{method:'DELETE'})
-    .then(r=>r.json()).then(d=>{ if(d.ok) pollData(); }).catch(()=>{});
+function deleteCard(type, name){
+  if(!confirm('Eliminar "'+name+'"?')) return;
+  fetch(DELETE_PATHS[type]+'?name='+encodeURIComponent(name),{method:'DELETE'})
+    .then(r=>r.json()).then(d=>{ if(d.ok) poll(); }).catch(()=>{});
 }
 document.addEventListener('click', e=>{
   if(!e.target || !e.target.classList) return;
-  let type = e.target.getAttribute('data-type');
-  if(e.target.classList.contains('del')){
-    if(type === 'chatgpt') chatgptDelete(e.target.getAttribute('data-name'));
-    else if(type === 'zai') zaiDelete(e.target.getAttribute('data-name'));
-    else if(type === 'ollama') ollamaDelete(e.target.getAttribute('data-name'));
-    else delSession(e.target.getAttribute('data-name'));
-  } else if(e.target.classList.contains('upd')){
-    if(type === 'chatgpt') chatgptRefresh(e.target.getAttribute('data-name'), e.target);
-    else if(type === 'zai') zaiRefresh(e.target.getAttribute('data-name'), e.target);
-    else if(type === 'ollama') ollamaRefresh(e.target.getAttribute('data-name'), e.target);
-    else updateSession(e.target.getAttribute('data-name'), e.target);
-  }
+  let type=e.target.getAttribute('data-type');
+  if(e.target.classList.contains('del')) deleteCard(type, e.target.getAttribute('data-name'));
+  else if(e.target.classList.contains('upd')) refreshCard(type, e.target.getAttribute('data-name'), e.target);
 });
+document.getElementById('modal-overlay').addEventListener('click', e=>{ if(e.target.id==='modal-overlay') closeModal(); });
 poll();
 setInterval(poll, 60000);
 </script>
