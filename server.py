@@ -1365,8 +1365,11 @@ HTML_PAGE = """<!doctype html>
   section { margin-bottom:32px; }
   section h2 { font-size:15px; margin:0 0 12px; color:var(--accent); border-bottom:1px solid var(--border); padding-bottom:6px; }
   .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(360px,1fr)); gap:16px; }
-  .card { background:var(--card); border:1px solid var(--border); border-radius:8px; padding:14px; }
+  .card { background:var(--card); border:1px solid var(--border); border-radius:8px; padding:14px; display:flex; flex-direction:column; }
+  .card .prov-title { font-size:11px; font-weight:700; color:var(--accent); text-transform:uppercase; letter-spacing:.5px; margin-bottom:2px; }
   .card .name { font-weight:600; font-size:15px; margin-bottom:6px; }
+  .card .actions { margin-top:auto; padding-top:10px; display:flex; align-items:center; gap:8px; }
+  .card .del { background:transparent; color:var(--err); border:1px solid var(--border); width:32px; height:32px; border-radius:6px; cursor:pointer; font-size:15px; display:flex; align-items:center; justify-content:center; padding:0; flex-shrink:0; }
   .badge { display:inline-block; padding:2px 8px; border-radius:10px; font-size:11px; font-weight:600; }
   .badge.ok { background:rgba(63,185,80,.15); color:var(--ok); }
   .badge.err { background:rgba(248,81,73,.15); color:var(--err); }
@@ -1395,11 +1398,9 @@ HTML_PAGE = """<!doctype html>
   .add-form button:hover { filter:brightness(1.1); }
   .add-form .hint { color:var(--muted); font-size:11px; margin-top:8px; }
   .add-form details { margin-top:8px; }
-  .card .del { margin-top:8px; background:transparent; color:var(--err); border:1px solid var(--border); padding:4px 10px; border-radius:6px; cursor:pointer; font-size:12px; }
-  .card .del:hover { background:rgba(248,81,73,.1); }
-  .card .upd { margin-top:8px; background:transparent; color:var(--accent); border:1px solid var(--border); padding:4px 10px; border-radius:6px; cursor:pointer; font-size:12px; }
+  .card .upd { background:transparent; color:var(--accent); border:1px solid var(--border); padding:4px 14px; border-radius:6px; cursor:pointer; font-size:12px; }
   .card .upd:hover { background:rgba(88,166,255,.1); }
-  .card .upd:disabled, .card .del:disabled { opacity:.5; cursor:default; }
+  .card .del:hover { background:rgba(248,81,73,.1); }
   .raw { white-space:pre-wrap; word-break:break-all; max-height:200px; overflow:auto; background:#0d1117; padding:8px; border-radius:6px; font:11px/1.4 ui-monospace,monospace; color:var(--muted); }
 </style>
 </head>
@@ -1481,6 +1482,7 @@ function autoReloadStr(ar){
 }
 
 // --- Render unificado de tarjetas ---
+const PROVIDER_LABELS = {opencode:'OpenCode Go', chatgpt:'ChatGPT / Codex', zai:'z.ai', ollama:'Ollama Cloud', openai:'OpenAI'};
 function renderCard(d, provider){
   let rows = '';
   // Plan
@@ -1540,13 +1542,13 @@ function renderCard(d, provider){
 
   let err = d.error ? '<div class="err">'+esc(d.error)+'</div>' : '';
   let raw = d.raw_snippet ? '<details><summary>HTML bruto (debug)</summary><div class="raw">'+esc(d.raw_snippet)+'</div></details>' : '';
-  let actions = '<div style="margin-top:10px;display:flex;gap:8px">'
-    + '<button class="upd" data-type="'+provider+'" data-name="'+esc(d.name)+'">Actualizar</button>'
-    + '<button class="del" data-type="'+provider+'" data-name="'+esc(d.name)+'">Eliminar</button>'
-    + '</div>';
+  let provTitle = PROVIDER_LABELS[provider] || provider;
   let display = d.email || d.name;
-  let provTag = '<span class="badge muted" style="margin-left:6px;font-size:10px">'+esc(provider)+'</span>';
-  return '<div class="card"><div class="name">'+esc(display)+' '+badge(d.status)+provTag+'</div>'+rows+err+raw+actions+'</div>';
+  let actions = '<div class="actions">'
+    + '<button class="upd" data-type="'+provider+'" data-name="'+esc(d.name)+'">Actualizar</button>'
+    + '<button class="del" data-type="'+provider+'" data-name="'+esc(d.name)+'" title="Eliminar">&times;</button>'
+    + '</div>';
+  return '<div class="card"><div class="prov-title">'+esc(provTitle)+'</div><div class="name">'+esc(display)+' '+badge(d.status)+'</div>'+rows+err+raw+actions+'</div>';
 }
 
 function render(data){
