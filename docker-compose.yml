@@ -13,4 +13,6 @@ services:
       - ./sessions:/app/sessions
       # Persiste las sesiones de ChatGPT (refresh tokens) entre reinicios.
       - ./chatgpt_sessions:/app/chatgpt_sessions
+      # Persiste las sesiones de z.ai (platform tokens) entre reinicios.
+      - ./zai_sessions:/app/zai_sessions
     restart: unless-stopped

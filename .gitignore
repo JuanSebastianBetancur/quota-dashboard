@@ -8,4 +8,5 @@ daemon.debug.log
 config.json
 sessions/
 chatgpt_sessions/
+zai_sessions/
 config.json

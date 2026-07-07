@@ -25,8 +25,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(HERE, "config.json")
 SESSIONS_DIR = os.path.join(HERE, "sessions")
 CHATGPT_SESSIONS_DIR = os.path.join(HERE, "chatgpt_sessions")
+ZAI_SESSIONS_DIR = os.path.join(HERE, "zai_sessions")
 os.makedirs(SESSIONS_DIR, exist_ok=True)
 os.makedirs(CHATGPT_SESSIONS_DIR, exist_ok=True)
+os.makedirs(ZAI_SESSIONS_DIR, exist_ok=True)
 
 OPENAI_BASE = "https://api.openai.com/v1"
 OPENCODE_WEB = "https://opencode.ai"
@@ -34,6 +36,7 @@ OPENAI_AUTH = "https://auth.openai.com"
 OPENAI_CHATGPT_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 OPENAI_DEVICE_VERIFY_URL = "https://auth.openai.com/codex/device"
 OPENAI_OAUTH_REDIRECT = "https://auth.openai.com/deviceauth/callback"
+ZAI_API_BASE = "https://api.z.ai/api"
 # 1 USD = 100,000,000 unidades internas (segun formatBalance del repo)
 UNIT_DIVISOR = 100_000_000
 
@@ -43,6 +46,7 @@ _state = {
     "openai": [],
     "opencode_scraped": [],
     "chatgpt": [],
+    "zai": [],
     "errors": [],
 }
 
@@ -940,6 +944,159 @@ def chatgpt_refresh_all():
         _state["chatgpt"] = results
 
 
+# ---------- z.ai (platform token) ----------
+
+def _zai_api_get(path, token, timeout=20):
+    """GET a api.z.ai/api/{path} con Bearer. Devuelve (status, json_dict_or_None)."""
+    url = f"{ZAI_API_BASE}{path}"
+    st, data, raw = _http_get_json(url, {"Authorization": f"Bearer {token}"}, timeout=timeout)
+    return st, data
+
+
+def _zai_session_path(name):
+    safe = re.sub(r"[^A-Za-z0-9_.@-]", "_", name)
+    return os.path.join(ZAI_SESSIONS_DIR, f"{safe}.json")
+
+
+def zai_list_sessions():
+    sessions = []
+    if not os.path.isdir(ZAI_SESSIONS_DIR):
+        return sessions
+    for fn in sorted(os.listdir(ZAI_SESSIONS_DIR)):
+        if not fn.endswith(".json"):
+            continue
+        try:
+            with open(os.path.join(ZAI_SESSIONS_DIR, fn), "r", encoding="utf-8") as f:
+                sessions.append(json.load(f))
+        except Exception:
+            pass
+    return sessions
+
+
+def zai_save_session(name, data):
+    data["name"] = name
+    with open(_zai_session_path(name), "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+    return data
+
+
+def zai_delete_session(name):
+    p = _zai_session_path(name)
+    if os.path.exists(p):
+        os.remove(p)
+        return True
+    return False
+
+
+def zai_fetch_one(sess):
+    """Consulta userInfo, subscription y quota de z.ai. Token permanente (sin exp)."""
+    name = sess.get("name", "?")
+    token = sess.get("token", "").strip()
+    out = {
+        "name": name,
+        "status": "unknown",
+        "email": sess.get("email"),
+        "plan_label": None,
+        "subscription": None,
+        "limits": None,
+        "level": None,
+        "error": None,
+    }
+    if not token:
+        out["status"] = "missing-token"
+        out["error"] = "Sin token."
+        return out
+
+    # 1) UserInfo (email)
+    st, data = _zai_api_get("/biz/customerService/zaiUserInfo", token)
+    if st == 200 and isinstance(data, dict) and data.get("success"):
+        u = data.get("data") or {}
+        out["email"] = u.get("email")
+        sess["email"] = u.get("email")
+        sess["customer_number"] = u.get("customerNumber")
+    elif st == 401:
+        out["status"] = "expired"
+        out["error"] = "Token invalido o expirado (401)."
+        return out
+
+    # 2) Subscription
+    st, data = _zai_api_get("/biz/subscription/list", token)
+    if st == 200 and isinstance(data, dict) and data.get("success"):
+        subs = data.get("data") or []
+        if subs:
+            s = subs[0]
+            out["subscription"] = {
+                "product_name": s.get("productName"),
+                "status": s.get("status"),
+                "valid": s.get("valid"),
+                "auto_renew": s.get("autoRenew"),
+                "actual_price": s.get("actualPrice"),
+                "next_renew_time": s.get("nextRenewTime"),
+                "billing_cycle": s.get("billingCycle"),
+                "current_period": s.get("currentPeriod"),
+            }
+            out["plan_label"] = s.get("productName") or "z.ai"
+            sess["plan_label"] = out["plan_label"]
+
+    # 3) Quota / Usage limits
+    st, data = _zai_api_get("/monitor/usage/quota/limit", token)
+    if st == 200 and isinstance(data, dict) and data.get("success"):
+        qdata = data.get("data") or {}
+        limits = qdata.get("limits") or []
+        parsed_limits = []
+        for lim in limits:
+            ltype = lim.get("type")
+            unit = lim.get("unit")
+            pct = lim.get("percentage")
+            # unit 3 = 5h rolling, unit 6 = weekly, unit 5 = monthly time-based
+            unit_labels = {3: "Rolling 5h", 6: "Semanal", 5: "Mensual"}
+            label = unit_labels.get(unit, f"unit {unit}")
+            parsed_limits.append({
+                "label": label,
+                "type": ltype,
+                "unit": unit,
+                "number": lim.get("number"),
+                "percentage": pct,
+                "remaining": lim.get("remaining"),
+                "current_value": lim.get("currentValue"),
+                "usage": lim.get("usage"),
+                "next_reset_time": lim.get("nextResetTime"),
+                "usage_details": lim.get("usageDetails"),
+            })
+        out["limits"] = parsed_limits
+        out["level"] = qdata.get("level")
+        sess["level"] = out["level"]
+
+    out["status"] = "ok"
+    zai_save_session(name, sess)
+    return out
+
+
+def zai_refresh_all():
+    """Refresca todas las cuentas z.ai y actualiza el estado."""
+    sessions = zai_list_sessions()
+    results = []
+
+    def worker(s):
+        try:
+            results.append(zai_fetch_one(s))
+        except Exception as e:
+            results.append({
+                "name": s.get("name", "?"),
+                "status": "error",
+                "error": f"{type(e).__name__}: {e}",
+            })
+
+    threads = [threading.Thread(target=worker, args=(s,)) for s in sessions]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+    results.sort(key=lambda x: x.get("name", ""))
+    with _state_lock:
+        _state["zai"] = results
+
+
 # ---------- refresco ----------
 
 def refresh_all(config):
@@ -972,6 +1129,12 @@ def refresh_all(config):
     except Exception as e:
         errors.append(f"chatgpt: {e}")
 
+    # refresco de cuentas z.ai
+    try:
+        zai_refresh_all()
+    except Exception as e:
+        errors.append(f"zai: {e}")
+
     openai_results.sort(key=lambda x: x.get("name", ""))
 
     with _state_lock:
@@ -992,13 +1155,14 @@ def background_loop(config):
 
 
 def background_scrape_loop(config):
-    """Refresco mas frecuente para el saldo scrapeado y ChatGPT (cada 5 min)."""
+    """Refresco mas frecuente para el saldo scrapeado, ChatGPT y z.ai (cada 5 min)."""
     interval = max(60, int(config.get("scrape_refresh_seconds", 300)))
     while True:
         time.sleep(interval)
         try:
             refresh_scraped()
             chatgpt_refresh_all()
+            zai_refresh_all()
         except Exception as e:
             with _state_lock:
                 _state["errors"].append(f"scrape_loop: {e}")
@@ -1119,6 +1283,28 @@ HTML_PAGE = """<!doctype html>
     </div>
   </section>
   <section>
+    <h2>z.ai (GLM Coding Plan)</h2>
+    <div class="grid" id="zai"><div class="empty">sin cuentas — anade una con el formulario de abajo</div></div>
+    <div class="add-form">
+      <label for="z-name">Nombre de la cuenta (ej: sebas44@gmail.com)</label>
+      <input id="z-name" type="text" placeholder="sebas44@gmail.com">
+      <label for="z-token">Platform token de z.ai <code>z-ai-open-platform-token-production</code></label>
+      <textarea id="z-token" placeholder="eyJhbGciOiJIUzUxMiJ9... (pega aqui el valor de localStorage)"></textarea>
+      <button onclick="zaiAddSession()">Anadir cuenta</button>
+      <span id="z-msg" class="err" style="margin-left:10px"></span>
+      <details>
+        <summary>Como obtener el token (una sola vez)</summary>
+        <div class="hint">
+          1. Abre <a style="color:var(--accent)" href="https://z.ai/manage-apikey/coding-plan/personal/usage" target="_blank">z.ai/manage-apikey/coding-plan/personal/usage</a> (logueado con Google).<br>
+          2. Pulsa <b>F12</b> &rarr; pestana <b>Console</b>.<br>
+          3. Pega: <code>localStorage.getItem('z-ai-open-platform-token-production')</code><br>
+          4. Copia el valor (sin las comillas) y pegalo arriba.<br>
+          El token <b>no expira</b>; el dashboard consultara el uso cada 5 min.
+        </div>
+      </details>
+    </div>
+  </section>
+  <section>
     <h2>OpenAI (claves admin)</h2>
     <div class="grid" id="openai"><div class="empty">cargando...</div></div>
   </section>
@@ -1209,10 +1395,13 @@ function render(data){
   let sc = document.getElementById('scraped');
   if(data.opencode_scraped && data.opencode_scraped.length) sc.innerHTML = data.opencode_scraped.map(renderScraped).join('');
   else sc.innerHTML = '<div class="empty">sin cuentas scrapeadas — anade una con el formulario de abajo</div>';
-  let cg = document.getElementById('chatgpt');
-  if(data.chatgpt && data.chatgpt.length) cg.innerHTML = data.chatgpt.map(renderChatGPT).join('');
-  else cg.innerHTML = '<div class="empty">sin cuentas — inicia login con el formulario de abajo</div>';
-  let er = document.getElementById('errors');
+   let cg = document.getElementById('chatgpt');
+   if(data.chatgpt && data.chatgpt.length) cg.innerHTML = data.chatgpt.map(renderChatGPT).join('');
+   else cg.innerHTML = '<div class="empty">sin cuentas — inicia login con el formulario de abajo</div>';
+   let za = document.getElementById('zai');
+   if(data.zai && data.zai.length) za.innerHTML = data.zai.map(renderZai).join('');
+   else za.innerHTML = '<div class="empty">sin cuentas — anade una con el formulario de abajo</div>';
+   let er = document.getElementById('errors');
   if(data.errors && data.errors.length){
     er.innerHTML = '<h2>Errores</h2><ul>'+data.errors.map(e=>'<li class="err">'+esc(e)+'</li>').join('')+'</ul>';
   } else { er.innerHTML=''; }
@@ -1336,14 +1525,67 @@ function chatgptDelete(name){
     .then(r=>r.json()).then(d=>{ if(d.ok) pollData(); }).catch(()=>{});
 }
 function pollData(){ poll(); }
+function renderZai(d){
+  let rows = '';
+  if(d.email) rows += row('Email', esc(d.email));
+  rows += row('Plan', esc(d.plan_label||d.level||'—'));
+  if(d.subscription){
+    let s = d.subscription;
+    if(s.valid) rows += row('Valido', esc(s.valid));
+    if(s.next_renew_time) rows += row('Prox. renovacion', esc(s.next_renew_time));
+    if(s.actual_price!=null) rows += row('Precio', '$'+s.actual_price+'/'+esc(s.billing_cycle||'mes'));
+    rows += row('Auto-renovar', s.auto_renew===1?'SI':'NO');
+  }
+  if(d.limits){
+    rows += '<div style="margin:8px 0 2px;font-weight:600;color:var(--accent);font-size:12px">Cuotas</div>';
+    for(let l of d.limits){
+      let pct = l.percentage!=null?l.percentage:l.usage;
+      rows += meterRow(l.label, {status:'ok', usagePercent:pct, resetInSec:l.next_reset_time?Math.round((l.next_reset_time-Date.now())/1000):null});
+    }
+  }
+  let err = d.error ? '<div class="err">'+esc(d.error)+'</div>' : '';
+  let actions = '<div style="margin-top:10px;display:flex;gap:8px">'
+    + '<button class="upd" data-type="zai" data-name="'+esc(d.name)+'">Actualizar</button>'
+    + '<button class="del" data-type="zai" data-name="'+esc(d.name)+'">Eliminar</button>'
+    + '</div>';
+  let display = d.email || d.name;
+  return '<div class="card"><div class="name">'+esc(display)+' '+badge(d.status)+'</div>'+rows+err+actions+'</div>';
+}
+function zaiAddSession(){
+  let name = document.getElementById('z-name').value.trim();
+  let token = document.getElementById('z-token').value.trim();
+  let msg = document.getElementById('z-msg');
+  msg.textContent = '';
+  if(!name || !token){ msg.textContent = 'Falta nombre o token.'; return; }
+  msg.textContent = 'guardando y consultando...';
+  fetch('/api/zai/session',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,token})})
+    .then(r=>r.json()).then(d=>{
+      if(d.ok){ document.getElementById('z-name').value=''; document.getElementById('z-token').value=''; msg.textContent='anadida.'; setTimeout(pollData,2000); }
+      else { msg.textContent = d.error || 'error'; }
+    }).catch(e=>{ msg.textContent = 'error: '+e; });
+}
+function zaiRefresh(name, btn){
+  if(btn){ btn.disabled = true; btn.textContent = 'Actualizando...'; }
+  fetch('/api/zai/refresh?name='+encodeURIComponent(name),{method:'POST'})
+    .then(r=>r.json()).then(d=>{
+      setTimeout(()=>{ pollData(); if(btn){ btn.disabled=false; btn.textContent='Actualizar'; } }, 3000);
+    }).catch(e=>{ if(btn){ btn.disabled=false; btn.textContent='Actualizar'; } });
+}
+function zaiDelete(name){
+  if(!confirm('Eliminar la cuenta z.ai "'+name+'"?')) return;
+  fetch('/api/zai/session?name='+encodeURIComponent(name),{method:'DELETE'})
+    .then(r=>r.json()).then(d=>{ if(d.ok) pollData(); }).catch(()=>{});
+}
 document.addEventListener('click', e=>{
   if(!e.target || !e.target.classList) return;
   let type = e.target.getAttribute('data-type');
   if(e.target.classList.contains('del')){
     if(type === 'chatgpt') chatgptDelete(e.target.getAttribute('data-name'));
+    else if(type === 'zai') zaiDelete(e.target.getAttribute('data-name'));
     else delSession(e.target.getAttribute('data-name'));
   } else if(e.target.classList.contains('upd')){
     if(type === 'chatgpt') chatgptRefresh(e.target.getAttribute('data-name'), e.target);
+    else if(type === 'zai') zaiRefresh(e.target.getAttribute('data-name'), e.target);
     else updateSession(e.target.getAttribute('data-name'), e.target);
   }
 });
@@ -1397,6 +1639,7 @@ class Handler(BaseHTTPRequestHandler):
                 "openai_accounts": [a.get("name") for a in cfg.get("openai_accounts", [])],
                 "scraped_accounts": [s.get("name") for s in list_sessions()],
                 "chatgpt_accounts": [s.get("name") for s in chatgpt_list_sessions()],
+                "zai_accounts": [s.get("name") for s in zai_list_sessions()],
             }
             self._send(200, json.dumps(safe))
         elif parsed.path == "/api/sessions":
@@ -1406,6 +1649,10 @@ class Handler(BaseHTTPRequestHandler):
         elif parsed.path == "/api/chatgpt/sessions":
             sessions = [{"name": s.get("name"), "email": s.get("email"),
                          "plan_type": s.get("chatgpt_plan_type")} for s in chatgpt_list_sessions()]
+            self._send(200, json.dumps(sessions))
+        elif parsed.path == "/api/zai/sessions":
+            sessions = [{"name": s.get("name"), "email": s.get("email"),
+                         "plan_label": s.get("plan_label")} for s in zai_list_sessions()]
             self._send(200, json.dumps(sessions))
         elif parsed.path == "/api/chatgpt/login/status":
             q = parse_qs(parsed.query)
@@ -1482,6 +1729,41 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 threading.Thread(target=chatgpt_refresh_all, daemon=True).start()
                 self._send(202, '{"ok":true}')
+        elif parsed.path == "/api/zai/session":
+            data = self._read_json()
+            if not isinstance(data, dict) or not data.get("name") or not data.get("token"):
+                self._send(400, '{"error":"se requiere name y token"}')
+                return
+            name = data["name"].strip()
+            token = data["token"].strip()
+            zai_save_session(name, {"token": token})
+            threading.Thread(target=zai_refresh_all, daemon=True).start()
+            self._send(201, json.dumps({"ok": True, "name": name}))
+        elif parsed.path == "/api/zai/refresh":
+            q = parse_qs(parsed.query)
+            if "name" in q:
+                name = q["name"][0]
+                sess = next((s for s in zai_list_sessions() if s.get("name") == name), None)
+                if not sess:
+                    self._send(404, '{"error":"no encontrada"}')
+                    return
+                def _do_zai():
+                    res = zai_fetch_one(sess)
+                    with _state_lock:
+                        current = list(_state.get("zai", []))
+                        for i, s in enumerate(current):
+                            if s.get("name") == name:
+                                current[i] = res
+                                break
+                        else:
+                            current.append(res)
+                        current.sort(key=lambda x: x.get("name", ""))
+                        _state["zai"] = current
+                threading.Thread(target=_do_zai, daemon=True).start()
+                self._send(202, json.dumps({"ok": True, "name": name}))
+            else:
+                threading.Thread(target=zai_refresh_all, daemon=True).start()
+                self._send(202, '{"ok":true}')
         else:
             self._send(404, '{"error":"not found"}')
 
@@ -1502,6 +1784,14 @@ class Handler(BaseHTTPRequestHandler):
             ok = chatgpt_delete_session(name)
             if ok:
                 threading.Thread(target=chatgpt_refresh_all, daemon=True).start()
+                self._send(200, json.dumps({"ok": True, "name": name}))
+            else:
+                self._send(404, json.dumps({"error": "no encontrada"}))
+        elif parsed.path == "/api/zai/session" and "name" in q:
+            name = q["name"][0]
+            ok = zai_delete_session(name)
+            if ok:
+                threading.Thread(target=zai_refresh_all, daemon=True).start()
                 self._send(200, json.dumps({"ok": True, "name": name}))
             else:
                 self._send(404, json.dumps({"error": "no encontrada"}))
