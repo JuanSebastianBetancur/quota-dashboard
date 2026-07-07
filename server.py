@@ -1354,7 +1354,7 @@ def background_loop(config):
 
 
 def background_scrape_loop(config):
-    """Refresco mas frecuente para el saldo scrapeado, ChatGPT y z.ai (cada 5 min)."""
+    """Refresco frecuente para el saldo scrapeado, ChatGPT y z.ai (cada min)."""
     interval = max(60, int(config.get("scrape_refresh_seconds", 300)))
     while True:
         time.sleep(interval)
