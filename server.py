@@ -27,6 +27,7 @@ SESSIONS_DIR = os.path.join(HERE, "sessions")
 CHATGPT_SESSIONS_DIR = os.path.join(HERE, "chatgpt_sessions")
 ZAI_SESSIONS_DIR = os.path.join(HERE, "zai_sessions")
 OLLAMA_SESSIONS_DIR = os.path.join(HERE, "ollama_sessions")
+DEVICE_LOGINS_PATH = os.path.join(CHATGPT_SESSIONS_DIR, "_device_logins.json")
 os.makedirs(SESSIONS_DIR, exist_ok=True)
 os.makedirs(CHATGPT_SESSIONS_DIR, exist_ok=True)
 os.makedirs(ZAI_SESSIONS_DIR, exist_ok=True)
@@ -61,9 +62,30 @@ _state = {
     "errors": [],
 }
 
-# Estado de logins device-code en curso (no persistente)
+# Estado de logins device-code en curso.
 _device_logins = {}
 _device_logins_lock = threading.Lock()
+
+
+def _save_device_logins():
+    try:
+        with open(DEVICE_LOGINS_PATH, "w", encoding="utf-8") as f:
+            json.dump(_device_logins, f)
+    except Exception:
+        pass
+
+
+def _load_device_logins():
+    try:
+        with open(DEVICE_LOGINS_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            _device_logins.update(data)
+    except Exception:
+        pass
+
+
+_load_device_logins()
 
 
 # ---------- helpers HTTP ----------
@@ -591,6 +613,7 @@ def chatgpt_start_device_login():
     }
     with _device_logins_lock:
         _device_logins[device_auth_id] = login
+        _save_device_logins()
     return login
 
 
@@ -600,6 +623,8 @@ def chatgpt_poll_device_login(device_auth_id):
         login = _device_logins.get(device_auth_id)
     if not login:
         return {"error": "login no encontrado (expiro o nunca inicio)"}
+    if login.get("status") == "success":
+        return login
     user_code = login.get("user_code")
     st, data, raw = _http_post_json(
         f"{OPENAI_AUTH}/api/accounts/deviceauth/token",
@@ -611,13 +636,22 @@ def chatgpt_poll_device_login(device_auth_id):
         code = (data.get("error") or {}).get("code", "")
         if code == "deviceauth_authorization_pending":
             login["status"] = "pending"
+            with _device_logins_lock:
+                _device_logins[device_auth_id] = login
+                _save_device_logins()
             return login
         if code == "deviceauth_authorization_slow_down":
             login["status"] = "pending"
             login["interval"] = login.get("interval", 5) + 5
+            with _device_logins_lock:
+                _device_logins[device_auth_id] = login
+                _save_device_logins()
             return login
         login["status"] = "error"
         login["error"] = f"poll: {code or raw[:120]}"
+        with _device_logins_lock:
+            _device_logins[device_auth_id] = login
+            _save_device_logins()
         return login
     if st == 200 and isinstance(data, dict):
         auth_code = data.get("authorization_code")
@@ -668,12 +702,17 @@ def chatgpt_poll_device_login(device_auth_id):
         })
         login["status"] = "success"
         login["name"] = name
-        # limpiar del mapa de logins en curso
+        login["completed_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        # Conservar el success para tolerar polls duplicados del navegador.
         with _device_logins_lock:
-            _device_logins.pop(device_auth_id, None)
+            _device_logins[device_auth_id] = login
+            _save_device_logins()
         return login
     login["status"] = "error"
     login["error"] = f"poll HTTP {st}: {raw[:200]}"
+    with _device_logins_lock:
+        _device_logins[device_auth_id] = login
+        _save_device_logins()
     return login
 
 
@@ -713,15 +752,15 @@ def chatgpt_whoami(access_token):
 
 def chatgpt_fetch_usage(access_token):
     """GET chatgpt.com/backend-api/codex/usage con Bearer + OAI-Product-Sku: codex.
-    Devuelve el dict de uso (rate_limit, credits, plan_type, email) o None."""
+    Devuelve (dict de uso o None, HTTP status, raw body)."""
     st, data, raw = _http_get_json(
         "https://chatgpt.com/backend-api/codex/usage",
         {"Authorization": f"Bearer {access_token}", "OAI-Product-Sku": "codex"},
         timeout=20,
     )
     if st == 200 and isinstance(data, dict):
-        return data
-    return None
+        return data, st, raw
+    return None, st, raw
 
 
 def _b64url_decode(s):
@@ -748,6 +787,17 @@ def _jwt_token_expired(tok):
     if not exp:
         return True
     return int(exp) < int(time.time())
+
+
+def _jwt_token_expires_in(tok):
+    """Devuelve segundos hasta la expiracion del JWT, o None si no se puede leer."""
+    p = _jwt_payload(tok)
+    if not p:
+        return None
+    exp = p.get("exp")
+    if not exp:
+        return None
+    return int(exp) - int(time.time())
 
 
 def chatgpt_extract_claims(access_token, id_token):
@@ -780,7 +830,7 @@ def chatgpt_list_sessions():
     if not os.path.isdir(CHATGPT_SESSIONS_DIR):
         return sessions
     for fn in sorted(os.listdir(CHATGPT_SESSIONS_DIR)):
-        if not fn.endswith(".json"):
+        if fn.startswith("_") or not fn.endswith(".json"):
             continue
         try:
             with open(os.path.join(CHATGPT_SESSIONS_DIR, fn), "r", encoding="utf-8") as f:
@@ -805,6 +855,11 @@ def chatgpt_delete_session(name):
     return False
 
 
+def _remove_state_item(bucket, name):
+    with _state_lock:
+        _state[bucket] = [x for x in _state.get(bucket, []) if x.get("name") != name]
+
+
 def chatgpt_fetch_one(sess):
     """Refresca una cuenta ChatGPT: renueva token + extrae claims del JWT +
     consulta /backend-api/codex/usage para rate_limits y credits.
@@ -826,32 +881,51 @@ def chatgpt_fetch_one(sess):
     refresh_token = sess.get("refresh_token")
     if not refresh_token:
         out["status"] = "missing-token"
-        out["error"] = "Sin refresh_token."
+        out["error"] = "No refresh_token."
+        out["need_relogin"] = True
         return out
 
     access_token = sess.get("access_token")
     id_token = sess.get("id_token")
 
-    # Si el access_token expiro, refrescarlo primero.
-    if _jwt_token_expired(access_token):
+    # Proactive refresh: keep the access token young so OpenAI is less likely to invalidate it.
+    # Refresh if it expires in less than 6 hours or is already expired.
+    expires_in = _jwt_token_expires_in(access_token)
+    if expires_in is None or expires_in < 6 * 3600:
         access_token, new_refresh, err = chatgpt_refresh_access_token(refresh_token)
         if err:
             out["status"] = "expired"
-            out["error"] = f"No se pudo refrescar el token: {err}"
+            out["error"] = f"Could not refresh token: {err}"
+            out["need_relogin"] = "refresh_token_invalidated" in err or "session has ended" in err.lower()
+            sess["need_relogin"] = out["need_relogin"]
+            chatgpt_save_session(name, sess)
             return out
         sess["access_token"] = access_token
         if new_refresh:
             sess["refresh_token"] = new_refresh
+        sess["last_token_refresh_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        sess["need_relogin"] = False
 
-    # Extraer claims del JWT (siempre; barato y no requiere red).
+    # Extract JWT claims (cheap, no network).
     info = chatgpt_extract_claims(access_token, id_token)
     if not info.get("email"):
         out["status"] = "error"
-        out["error"] = "No se pudo extraer email del token."
+        out["error"] = "Could not extract email from token."
+        out["need_relogin"] = True
+        sess["need_relogin"] = True
         chatgpt_save_session(name, sess)
         return out
+    pt = info.get("chatgpt_plan_type") or ""
+    plan_labels = {
+        "plus": "ChatGPT Plus",
+        "pro": "ChatGPT Pro",
+        "prolite": "ChatGPT Plus",
+        "team": "ChatGPT Team",
+        "enterprise": "ChatGPT Enterprise",
+    }
+    out["plan_label"] = plan_labels.get(pt, pt or "Unknown")
 
-    # Actualizar la sesion persistida con la info extraida.
+    # Update persisted session with extracted info.
     sess["email"] = info.get("email")
     sess["name"] = info.get("name") or sess.get("name")
     sess["chatgpt_user_id"] = info.get("chatgpt_user_id")
@@ -861,7 +935,7 @@ def chatgpt_fetch_one(sess):
     sess["subscription_active_until"] = info.get("subscription_active_until")
     sess["organizations"] = info.get("organizations")
 
-    # Si el nombre actual no es el email, renombrar el archivo de sesion al email.
+    # Rename session file to email if needed.
     email = info.get("email")
     if email and name != email:
         chatgpt_delete_session(name)
@@ -869,8 +943,26 @@ def chatgpt_fetch_one(sess):
     sess["name"] = name
     out["name"] = name
 
-    # Consultar uso de Codex (rate_limits + credits). No consume cuota.
-    usage = chatgpt_fetch_usage(access_token)
+    # Fetch Codex usage (rate_limits + credits). No quota consumed.
+    usage, usage_status, usage_raw = chatgpt_fetch_usage(access_token)
+    if usage_status == 401:
+        access_token, new_refresh, err = chatgpt_refresh_access_token(sess.get("refresh_token"))
+        if err:
+            out["status"] = "expired"
+            out["rate_limits"] = None
+            out["credits"] = None
+            out["error"] = f"Token invalidated and could not refresh: {err}"
+            out["need_relogin"] = "refresh_token_invalidated" in err or "session has ended" in err.lower()
+            sess["need_relogin"] = out["need_relogin"]
+            chatgpt_save_session(name, sess)
+            return out
+        sess["access_token"] = access_token
+        if new_refresh:
+            sess["refresh_token"] = new_refresh
+        sess["last_token_refresh_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        sess["need_relogin"] = False
+        usage, usage_status, usage_raw = chatgpt_fetch_usage(access_token)
+
     if usage:
         rl = usage.get("rate_limit") or {}
         primary = rl.get("primary_window") or {}
@@ -903,30 +995,24 @@ def chatgpt_fetch_one(sess):
             "approx_local_messages": credits.get("approx_local_messages"),
             "approx_cloud_messages": credits.get("approx_cloud_messages"),
         }
-        # Persistir para no perderlo si la proxima llamada falla
+        # Persist so we don't lose it if the next call fails.
         sess["last_rate_limits"] = rate_limits
         sess["last_credits"] = out["credits"]
         sess["last_usage_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
     else:
-        # Si falla, usar el ultimo guardado
+        # Fallback to last known values.
         out["rate_limits"] = sess.get("last_rate_limits")
         out["credits"] = sess.get("last_credits")
+        out["error"] = f"Could not fetch current Codex usage (HTTP {usage_status}). Showing last saved value."
 
     chatgpt_save_session(name, sess)
 
     out["email"] = info.get("email")
     out["plan_type"] = info.get("chatgpt_plan_type")
     out["subscription_active_until"] = info.get("subscription_active_until")
-    pt = info.get("chatgpt_plan_type") or ""
-    plan_labels = {
-        "plus": "ChatGPT Plus",
-        "pro": "ChatGPT Pro",
-        "prolite": "ChatGPT Plus",
-        "team": "ChatGPT Team",
-        "enterprise": "ChatGPT Enterprise",
-    }
-    out["plan_label"] = plan_labels.get(pt, pt or "Desconocido")
-    out["status"] = "ok"
+    out["need_relogin"] = sess.get("need_relogin", False)
+    if out["status"] == "unknown":
+        out["status"] = "ok" if usage else "error"
     return out
 
 
@@ -1423,6 +1509,16 @@ HTML_PAGE = """<!doctype html>
   .add-form .hint { color:var(--muted); font-size:11px; margin-top:8px; }
   .add-form details { margin-top:8px; }
   .raw { white-space:pre-wrap; word-break:break-all; max-height:200px; overflow:auto; background:#0d1117; padding:8px; border-radius:6px; font:11px/1.4 ui-monospace,monospace; color:var(--muted); }
+  .dialog-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,.72); z-index:120; align-items:center; justify-content:center; padding:20px; }
+  .dialog { width:min(420px,100%); background:var(--card); border:1px solid var(--border); border-radius:14px; box-shadow:0 18px 60px rgba(0,0,0,.45); padding:20px; }
+  .dialog h2 { margin:0 0 8px; font-size:17px; color:var(--fg); }
+  .dialog p { margin:0; color:var(--muted); font-size:13px; }
+  .dialog .target { margin-top:12px; padding:10px; border:1px solid var(--border); border-radius:8px; background:#0d1117; color:var(--fg); font:13px ui-monospace,monospace; word-break:break-all; }
+  .dialog-actions { display:flex; justify-content:flex-end; gap:10px; margin-top:18px; }
+  .dialog-actions button { border-radius:8px; padding:9px 14px; cursor:pointer; font-weight:600; border:1px solid var(--border); }
+  .dialog-actions .cancel { background:transparent; color:var(--fg); }
+  .dialog-actions .danger { background:var(--err); border-color:var(--err); color:#fff; }
+  .dialog-actions button:disabled { opacity:.65; cursor:not-allowed; }
 </style>
 </head>
 <body>
@@ -1447,6 +1543,19 @@ HTML_PAGE = """<!doctype html>
     <div id="modal-step2" style="display:none">
       <button onclick="modalBack()" style="background:none;border:1px solid var(--border);color:var(--muted);padding:6px 12px;border-radius:6px;cursor:pointer;font-size:12px;margin-bottom:16px">&larr; Back</button>
       <div id="modal-form"></div>
+    </div>
+  </div>
+</div>
+
+<div id="delete-dialog-overlay" class="dialog-overlay" role="dialog" aria-modal="true" aria-labelledby="delete-dialog-title">
+  <div class="dialog">
+    <h2 id="delete-dialog-title">Delete account</h2>
+    <p>This will remove the card and delete the saved session from the dashboard.</p>
+    <div id="delete-dialog-target" class="target"></div>
+    <div id="delete-dialog-error" class="err" style="display:none"></div>
+    <div class="dialog-actions">
+      <button id="delete-cancel" class="cancel" type="button">Cancel</button>
+      <button id="delete-confirm" class="danger" type="button">Delete</button>
     </div>
   </div>
 </div>
@@ -1598,12 +1707,18 @@ function renderCard(d, provider){
   let raw = d.raw_snippet ? '<details><summary>Raw HTML (debug)</summary><div class="raw">'+esc(d.raw_snippet)+'</div></details>' : '';
   let provTitle = PROVIDER_LABELS[provider] || provider;
   let display = d.email || d.name;
+  let needRelogin = d.need_relogin || false;
+  let reloginBtn = '';
+  if(provider === 'chatgpt' && needRelogin){
+    reloginBtn = '<button class="relogin" data-type="'+esc(provider)+'" data-name="'+esc(d.name)+'" style="background:rgba(210,153,34,.15);color:var(--warn);border:1px solid rgba(210,153,34,.5);border-radius:6px;padding:0 14px;height:32px;cursor:pointer;font:12px/1 ui-sans-serif,system-ui,sans-serif">Re-login</button>';
+  }
   let actions = '<div class="actions">'
     + '<button class="del" data-type="'+provider+'" data-name="'+esc(d.name)+'" title="Delete">'+TRASH+'</button>'
     + '<span style="flex:1"></span>'
+    + reloginBtn
     + '<button class="upd" data-type="'+provider+'" data-name="'+esc(d.name)+'">Update</button>'
     + '</div>';
-  return '<div class="card'+(hitLimit?' card-limit':'')+'"><div class="prov-title">'+esc(provTitle)+'</div><div class="name">'+esc(display)+' '+badge(d.status)+'</div>'+rows+err+raw+actions+'</div>';
+  return '<div class="card'+(hitLimit?' card-limit':'')+'" data-type="'+esc(provider)+'" data-name="'+esc(d.name)+'" data-relogin="'+esc(needRelogin)+'"><div class="prov-title">'+esc(provTitle)+'</div><div class="name">'+esc(display)+' '+badge(d.status)+'</div>'+rows+err+raw+actions+'</div>';
 }
 
 function render(data){
@@ -1665,7 +1780,7 @@ function modalSelect(id){
   if(p.field === 'device'){
     // ChatGPT device-code flow
     body += '<p style="color:var(--muted);font-size:12px;margin-bottom:10px">'+p.hint+'</p>';
-    body += '<button onclick="modalChatGPTLogin()" style="background:var(--accent);color:#000;border:0;padding:10px 20px;border-radius:8px;cursor:pointer;font-weight:600">Start login</button>';
+    body += '<button id="m-cg-start" onclick="modalChatGPTLogin()" style="background:var(--accent);color:#000;border:0;padding:10px 20px;border-radius:8px;cursor:pointer;font-weight:600">Start login</button>';
     body += '<span id="m-msg" class="err" style="margin-left:10px"></span>';
     body += '<div id="m-login-box" style="display:none;margin-top:12px;padding:12px;background:var(--bg);border-radius:6px;border:1px solid var(--border)">';
     body += '<div style="font-size:12px;color:var(--muted);margin-bottom:4px">Open this URL and enter the code:</div>';
@@ -1710,11 +1825,15 @@ function modalSubmit(){
     }).catch(e=>{ if(msg) msg.textContent='error: '+e; });
 }
 function modalChatGPTLogin(){
+  if(_cgPollTimer){ clearTimeout(_cgPollTimer); _cgPollTimer=null; }
   let msg = document.getElementById('m-msg');
+  let startBtn = document.getElementById('m-cg-start');
+  if(startBtn){ startBtn.disabled = true; startBtn.textContent = 'Starting...'; }
   msg.textContent = 'starting...';
   fetch('/api/chatgpt/login',{method:'POST'})
     .then(r=>r.json()).then(d=>{
-      if(d.error){ msg.textContent=d.error; return; }
+      if(d.error){ msg.textContent=d.error; if(startBtn){ startBtn.disabled=false; startBtn.textContent='Start login'; } return; }
+      if(startBtn){ startBtn.textContent = 'Login started'; }
       msg.textContent='';
       document.getElementById('m-login-box').style.display='';
       document.getElementById('m-login-url').textContent=d.url;
@@ -1724,35 +1843,89 @@ function modalChatGPTLogin(){
         fetch('/api/chatgpt/login/poll?device_auth_id='+encodeURIComponent(d.device_auth_id),{method:'POST'})
           .then(r=>r.json()).then(x=>{
             if(x.status==='success'){ statusEl.style.color='var(--ok)'; statusEl.textContent='added: '+(x.name||'ok'); setTimeout(()=>{closeModal(); poll();},1500); }
-            else if(x.status==='pending'){ _cgPollTimer=setTimeout(poll2,(d.interval||5)*1000); }
+            else if(x.status==='pending'){ _cgPollTimer=setTimeout(poll2,(x.interval||d.interval||5)*1000); }
             else { statusEl.style.color='var(--err)'; statusEl.textContent='error: '+(x.error||'?'); }
           }).catch(e=>{ statusEl.style.color='var(--err)'; statusEl.textContent='network: '+e; });
       };
       _cgPollTimer=setTimeout(poll2,(d.interval||5)*1000);
-    }).catch(e=>{ msg.textContent='error: '+e; });
+    }).catch(e=>{ msg.textContent='error: '+e; if(startBtn){ startBtn.disabled=false; startBtn.textContent='Start login'; } });
 }
 
-// --- Acciones por card (Actualizar / Eliminar) ---
+// --- Card actions (Update / Delete / Re-login) ---
 const REFRESH_PATHS = {opencode:'/api/session/scrape', chatgpt:'/api/chatgpt/refresh', zai:'/api/zai/refresh', ollama:'/api/ollama/refresh'};
 const DELETE_PATHS = {opencode:'/api/session', chatgpt:'/api/chatgpt/session', zai:'/api/zai/session', ollama:'/api/ollama/session'};
+let pendingDelete = null;
 function refreshCard(type, name, btn){
   if(btn){ btn.disabled=true; btn.textContent='Updating...'; }
   fetch(REFRESH_PATHS[type]+'?name='+encodeURIComponent(name),{method:'POST'})
     .then(()=>setTimeout(()=>{ poll(); if(btn){btn.disabled=false; btn.textContent='Update';} },3000))
     .catch(()=>{ if(btn){btn.disabled=false; btn.textContent='Update';} });
 }
-function deleteCard(type, name){
-  if(!confirm('Delete "'+name+'"?')) return;
+function reloginCard(type, name, btn){
+  if(type !== 'chatgpt') return;
+  if(!confirm('Re-login will replace the saved ChatGPT session for "'+name+'". Continue?')) return;
+  if(btn){ btn.disabled=true; btn.textContent='Starting...'; }
   fetch(DELETE_PATHS[type]+'?name='+encodeURIComponent(name),{method:'DELETE'})
-    .then(r=>r.json()).then(d=>{ if(d.ok) poll(); }).catch(()=>{});
+    .then(r=>r.json().then(d=>({ok:r.ok, data:d})))
+    .then(({ok,data})=>{
+      if(!ok || !data.ok) throw new Error(data.error || 'Could not delete old session');
+      openModal();
+      modalSelect('chatgpt');
+      setTimeout(()=>modalChatGPTLogin(), 200);
+      if(btn){ btn.disabled=false; btn.textContent='Re-login'; }
+    })
+    .catch(e=>{
+      alert(e.message || String(e));
+      if(btn){ btn.disabled=false; btn.textContent='Re-login'; }
+    });
+}
+function openDeleteDialog(type, name, card){
+  pendingDelete = {type, name, card};
+  document.getElementById('delete-dialog-target').textContent = (PROVIDER_LABELS[type] || type) + ' / ' + name;
+  document.getElementById('delete-dialog-error').style.display = 'none';
+  document.getElementById('delete-confirm').disabled = false;
+  document.getElementById('delete-confirm').textContent = 'Delete';
+  document.getElementById('delete-dialog-overlay').style.display = 'flex';
+}
+function closeDeleteDialog(){
+  document.getElementById('delete-dialog-overlay').style.display = 'none';
+  pendingDelete = null;
+}
+function confirmDelete(){
+  if(!pendingDelete) return;
+  let {type, name, card} = pendingDelete;
+  let btn = document.getElementById('delete-confirm');
+  let err = document.getElementById('delete-dialog-error');
+  btn.disabled = true;
+  btn.textContent = 'Deleting...';
+  fetch(DELETE_PATHS[type]+'?name='+encodeURIComponent(name),{method:'DELETE'})
+    .then(r=>r.json().then(d=>({ok:r.ok, data:d})))
+    .then(({ok,data})=>{
+      if(!ok || !data.ok) throw new Error(data.error || 'Could not delete');
+      if(card) card.remove();
+      if(!document.querySelector('#allcards .card')) document.getElementById('allcards').innerHTML = '<div class="empty">No accounts — click "Add account"</div>';
+      closeDeleteDialog();
+      poll();
+    })
+    .catch(e=>{
+      err.textContent = e.message || String(e);
+      err.style.display = 'block';
+      btn.disabled = false;
+      btn.textContent = 'Delete';
+    });
 }
 document.addEventListener('click', e=>{
-  if(!e.target || !e.target.classList) return;
-  let type=e.target.getAttribute('data-type');
-  if(e.target.classList.contains('del')) deleteCard(type, e.target.getAttribute('data-name'));
-  else if(e.target.classList.contains('upd')) refreshCard(type, e.target.getAttribute('data-name'), e.target);
+  let btn = e.target && e.target.closest ? e.target.closest('button.del,button.upd,button.relogin') : null;
+  if(!btn) return;
+  let type=btn.getAttribute('data-type');
+  if(btn.classList.contains('del')) openDeleteDialog(type, btn.getAttribute('data-name'), btn.closest('.card'));
+  else if(btn.classList.contains('relogin')) reloginCard(type, btn.getAttribute('data-name'), btn);
+  else if(btn.classList.contains('upd')) refreshCard(type, btn.getAttribute('data-name'), btn);
 });
 document.getElementById('modal-overlay').addEventListener('click', e=>{ if(e.target.id==='modal-overlay') closeModal(); });
+document.getElementById('delete-cancel').addEventListener('click', closeDeleteDialog);
+document.getElementById('delete-confirm').addEventListener('click', confirmDelete);
+document.getElementById('delete-dialog-overlay').addEventListener('click', e=>{ if(e.target.id==='delete-dialog-overlay') closeDeleteDialog(); });
 poll();
 setInterval(poll, 60000);
 </script>
@@ -1980,6 +2153,7 @@ class Handler(BaseHTTPRequestHandler):
             name = q["name"][0]
             ok = delete_session(name)
             if ok:
+                _remove_state_item("opencode_scraped", name)
                 threading.Thread(target=refresh_scraped, daemon=True).start()
                 self._send(200, json.dumps({"ok": True, "name": name}))
             else:
@@ -1988,6 +2162,7 @@ class Handler(BaseHTTPRequestHandler):
             name = q["name"][0]
             ok = chatgpt_delete_session(name)
             if ok:
+                _remove_state_item("chatgpt", name)
                 threading.Thread(target=chatgpt_refresh_all, daemon=True).start()
                 self._send(200, json.dumps({"ok": True, "name": name}))
             else:
@@ -1996,6 +2171,7 @@ class Handler(BaseHTTPRequestHandler):
             name = q["name"][0]
             ok = zai_delete_session(name)
             if ok:
+                _remove_state_item("zai", name)
                 threading.Thread(target=zai_refresh_all, daemon=True).start()
                 self._send(200, json.dumps({"ok": True, "name": name}))
             else:
@@ -2004,6 +2180,7 @@ class Handler(BaseHTTPRequestHandler):
             name = q["name"][0]
             ok = ollama_delete_session(name)
             if ok:
+                _remove_state_item("ollama", name)
                 threading.Thread(target=ollama_refresh_all, daemon=True).start()
                 self._send(200, json.dumps({"ok": True, "name": name}))
             else:
