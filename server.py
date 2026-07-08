@@ -1784,7 +1784,7 @@ function modalSelect(id){
     body += '<span id="m-msg" class="err" style="margin-left:10px"></span>';
     body += '<div id="m-login-box" style="display:none;margin-top:12px;padding:12px;background:var(--bg);border-radius:6px;border:1px solid var(--border)">';
     body += '<div style="font-size:12px;color:var(--muted);margin-bottom:4px">Open this URL and enter the code:</div>';
-    body += '<div id="m-login-url" style="font-family:monospace;color:var(--accent);word-break:break-all;font-size:12px;margin-bottom:8px"></div>';
+    body += '<a id="m-login-url" href="#" target="_blank" rel="noopener" style="display:block;font-family:monospace;color:var(--accent);word-break:break-all;font-size:12px;margin-bottom:8px;text-decoration:none"></a>';
     body += '<div style="font-size:12px;color:var(--muted);margin-bottom:4px">Code:</div>';
     body += '<div id="m-login-code" style="font-size:22px;font-weight:700;letter-spacing:2px;font-family:monospace;margin-bottom:8px"></div>';
     body += '<div id="m-login-status" style="color:var(--warn);font-size:12px">waiting...</div>';
@@ -1836,7 +1836,9 @@ function modalChatGPTLogin(){
       if(startBtn){ startBtn.textContent = 'Login started'; }
       msg.textContent='';
       document.getElementById('m-login-box').style.display='';
-      document.getElementById('m-login-url').textContent=d.url;
+      let urlEl = document.getElementById('m-login-url');
+      urlEl.textContent = d.url;
+      urlEl.href = d.url;
       document.getElementById('m-login-code').textContent=d.user_code;
       let statusEl=document.getElementById('m-login-status');
       let poll2 = () => {
